@@ -8,8 +8,8 @@ from datetime import datetime
 import random
 import pandas as pd
 
-now = datetime.today().strftime('%d-%m-%Y')
-#now = "17-07-2023"
+#now = datetime.today().strftime('%d-%m-%Y')
+now = "18-07-2024"
 primeiro_dia = "14-07-2024"
 next_14_days = get_next_14_days(primeiro_dia)
 
