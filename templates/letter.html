@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Letra {{ selected_letter }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js"></script>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@48,400,0,0" />
+</head>
+<body>
+    <h2>Pessoas com a letra {{ selected_letter }}</h2>
+    <p>Total de pessoas: {{ pessoas|length }}</p>
+  <button class="btn btn-success" onclick="location.href = '{{url_for("add")}}'">
+    <span class="material-symbols-outlined">
+        person_add
+    </span>
+</button>
+    <table class="table">
+        <thead>
+            <tr>
+                <th scope="col">Nome</th>
+                <th scope="col">Idade</th>
+                <th scope="col">CEP</th>
+                <th scope="col">Rua</th>
+                <th scope="col">Bairro</th>
+                <th scope="col">Casa</th>
+                <th scope="col">Telefone</th>
+                {% for dia in next_14_days %}
+                <th scope="col">{{ dia }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for pessoa in pessoas %}
+            <tr>
+                <td>{{ pessoa['nome'] }}</td>
+                <td>{{ pessoa['idade'] }}</td>
+                <td>{{ pessoa['cep'] }}</td>
+                <td>{{ pessoa['rua'] }}</td>
+                <td>{{ pessoa['bairro'] }}</td>
+                <td>{{ pessoa['casa'] }}</td>
+                <td>{{ pessoa['telefone'] }}</td>
+                {% for dia in next_14_days %}
+                <td>
+                    {% set dia_id = loop.index %}
+                    {% if pessoa['dia' ~ dia_id] == '1' %}
+                    <button id="badge-{{ loop.index }}-{{ dia_id }}" class="badge bg-success" onclick="marcarPresenca({{ pessoa['id'] }}, {{ dia_id }})" disabled>
+                        ✔
+                    </button>
+                    {% else %}
+                      {% if now == dia %}
+                    <button id="badge-{{ loop.index }}-{{ dia_id }}" class="badge bg-secondary" onclick="marcarPresenca({{ pessoa['id'] }}, {{ dia_id }})">
+                        ❌
+                    </button>
+                      {% else %}
+                  <button id="badge-{{ loop.index }}-{{ dia_id }}" class="badge bg-secondary" onclick="marcarPresenca({{ pessoa['id'] }}, {{ dia_id }})" disabled>
+                        ❌
+                    </button>
+                      {% endif %}
+                    {% endif %}
+                </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <script>
+        function marcarPresenca(pessoaId, diaId) {
+            fetch('/marcar_presenca', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ pessoa_id: pessoaId, dia: diaId }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const badgeElement = document.getElementById(`badge-${pessoaId}-${diaId}`);
+                    if (badgeElement) {
+                        badgeElement.classList.remove('bg-secondary');
+                        badgeElement.classList.add('bg-success');
+                    }
+                    location.reload();
+                }
+            })
+            .catch(error => {
+                console.error('Erro ao marcar presença:', error);
+            });
+          document.getElementById('badge-' + id + '-' + dia_id).disabled = true;
+        }
+    </script>
+</body>
+</html>

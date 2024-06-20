@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sorteio</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
+    <style>
+        .animation {
+            animation-duration: 5s;
+            animation-timing-function: ease-in-out;
+            animation-iteration-count: infinite;
+        }
+
+        @keyframes highlight {
+            0% { background-color: white; }
+            50% { background-color: yellow; }
+            100% { background-color: white; }
+        }
+    </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Sorteio</h2>
+    <h5>Pessoas com Presença Marcada Hoje ({{ now }})</h5>
+
+    {% if pessoas_presentes %}
+      <p>Total de pessoas: {{ pessoas_presentes|length }}</p>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th scope="col">Nome</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pessoa in pessoas_presentes %}
+                    <tr>
+                        <td>{{ pessoa['nome'] }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <button class="btn btn-primary" onclick="realizarSorteio()">Realizar Sorteio</button>
+    {% else %}
+        <p>Não há pessoas com presença marcada hoje.</p>
+    {% endif %}
+
+    <h3>Ganhador(es) do Sorteio</h3>
+
+    <div id="ganhador"></div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js"></script>
+    <script>
+        function realizarSorteio() {
+            document.getElementById('ganhador').innerHTML = '<p>Realizando sorteio...</p>';
+            document.getElementById('ganhador').classList.add('animation');
+
+            fetch('/realizar_sorteio', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ quantidadeSorteados: 1 })  // Defina a quantidade de ganhadores desejada
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    var ganhadores = data.ganhadores;
+                    var resultadoHTML = '';
+
+                    // Adicione os efeitos aqui, por exemplo, destacar o ganhador com uma animação
+                    ganhadores.forEach(function(ganhador) {
+                        resultadoHTML += '<p><h3 style="color: Green;">' + ganhador + '</h3></p>';
+                    });
+
+                    document.getElementById('ganhador').innerHTML = resultadoHTML;
+                    document.getElementById('ganhador').classList.remove('animation');
+                } else {
+                    document.getElementById('ganhador').innerHTML = '<p>Não foi possível realizar o sorteio.</p>';
+                }
+            })
+            .catch(error => {
+                console.error('Ocorreu um erro ao realizar o sorteio:', error);
+                document.getElementById('ganhador').innerHTML = '<p>Ocorreu um erro ao realizar o sorteio.</p>';
+            });
+        }
+    </script>
+    </div>
+</body>
+</html>

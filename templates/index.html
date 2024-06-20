@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Missão Calebe | OF</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-KK94CHFLLe+nY2dmCWGMq91rCGa5gtU4mk92HdvYe+M/SXH301p5ILy+dN9+nJOZ" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@48,400,0,0" />
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        .letter {
+            width: 40px;
+            height: 40px;
+            border: 1px solid black;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            margin: 2px;
+            font-size: 32px;
+        }
+
+        .letter-link {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            height: 100%;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .container {
+            min-height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            overflow-y: hidden;
+        }
+
+        .row {
+            margin-bottom: 20px;
+        }
+
+        .toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            padding: 10px;
+            background-color: #f8f9fa;
+            margin-bottom: 20px;
+        }
+
+        .toolbar img {
+            max-height: 30px;
+            margin-right: 10px;
+        }
+
+        .toolbar button {
+            margin-left: 10px;
+        }
+
+        .banner {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="banner">
+            <img src="{{url_for('static', filename='LogoMissaoCalebe.jpeg')}}" style="background-color:#03c2fc" width="100%" height="80%">
+        </div>
+      <h3>Data: {{today}}</h3>
+        <div class="toolbar">
+            <button class="btn btn-primary" onclick="location.href = '{{url_for("indicadores")}}'"><span class="material-symbols-outlined">
+                equalizer
+            </span></button>
+            <button class="btn btn-warning" onclick="location.href = '{{url_for("sorteio")}}'"><span class="material-symbols-outlined">
+                question_exchange
+            </span></button>
+            <button class="btn btn-success" onclick="location.href = '{{url_for("add")}}'">
+    <span class="material-symbols-outlined">
+        person_add
+    </span>
+</button>
+        </div>
+        <div class="row">
+            <div class="col-12">
+                <div class="letter">
+                    <a href="/letter/A" class="letter-link">A</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/B" class="letter-link">B</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/C" class="letter-link">C</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/D" class="letter-link">D</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/E" class="letter-link">E</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/F" class="letter-link">F</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/G" class="letter-link">G</a>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-12">
+                <div class="letter">
+                    <a href="/letter/H" class="letter-link">H</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/I" class="letter-link">I</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/J" class="letter-link">J</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/K" class="letter-link">K</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/L" class="letter-link">L</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/M" class="letter-link">M</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/N" class="letter-link">N</a>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-12">
+                <div class="letter">
+                    <a href="/letter/O" class="letter-link">O</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/P" class="letter-link">P</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/Q" class="letter-link">Q</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/R" class="letter-link">R</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/S" class="letter-link">S</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/T" class="letter-link">T</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/U" class="letter-link">U</a>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-12">
+                <div class="letter">
+                    <a href="/letter/V" class="letter-link">V</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/W" class="letter-link">W</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/X" class="letter-link">X</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/Y" class="letter-link">Y</a>
+                </div>
+                <div class="letter">
+                    <a href="/letter/Z" class="letter-link">Z</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Outros elementos podem ser adicionados aqui -->
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeoTz1HIcje39Wm4jDKdf19U8gI4ddQ3GYNS7NTKfAdVQSZe" crossorigin="anonymous"></script>
+</body>
+</html>
