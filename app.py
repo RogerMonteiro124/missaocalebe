@@ -7,6 +7,7 @@ from templates.util import get_next_14_days, obter_data_do_sorteio
 from datetime import datetime
 import random
 import pytz
+import jsonify
 import pandas as pd
 
 manaus = pytz.timezone("America/Manaus") 
