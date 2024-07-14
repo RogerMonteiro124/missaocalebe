@@ -31,8 +31,8 @@ def obter_nome_arquivo_csv(dia):
 @app.route('/list_files', defaults={'req_path': ''})
 @app.route('/list_files/<path:req_path>')
 def list_files(req_path):
-    # Diretório base (pode ser ajustado conforme necessário)
-    BASE_DIR = '/'
+    # Diretório base é o diretório onde o app.py está localizado
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
     # Construir caminho absoluto
     abs_path = os.path.join(BASE_DIR, req_path)
@@ -40,7 +40,11 @@ def list_files(req_path):
     # Verificar se o caminho é um diretório
     if os.path.isdir(abs_path):
         files = os.listdir(abs_path)
-        return jsonify(files)
+        files_list = [
+            f'<li><a href="/list_files/{req_path}/{file}">{file}</a></li>'
+            for file in files
+        ]
+        return render_template_string('<ul>' + ''.join(files_list) + '</ul>')
     elif os.path.isfile(abs_path):
         return send_from_directory(BASE_DIR, req_path)
     else:
