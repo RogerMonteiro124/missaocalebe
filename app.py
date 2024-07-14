@@ -6,10 +6,13 @@ import csv
 from templates.util import get_next_14_days, obter_data_do_sorteio
 from datetime import datetime
 import random
+import pytz
 import pandas as pd
 
-#now = datetime.today().strftime('%d-%m-%Y')
-now = "18-07-2024"
+manaus = pytz.timezone("America/Manaus") 
+now = datetime.today(manaus).strftime('%d-%m-%Y')
+#now = "18-07-2024"
+
 primeiro_dia = "14-07-2024"
 next_14_days = get_next_14_days(primeiro_dia)
 
@@ -25,6 +28,23 @@ def obter_nome_arquivo_csv(dia):
   caminho_arquivo = os.path.join(pasta_sorteio, nome_arquivo)
   return caminho_arquivo
 
+@app.route('/list_files', defaults={'req_path': ''})
+@app.route('/list_files/<path:req_path>')
+def list_files(req_path):
+    # Diretório base (pode ser ajustado conforme necessário)
+    BASE_DIR = '/'
+
+    # Construir caminho absoluto
+    abs_path = os.path.join(BASE_DIR, req_path)
+
+    # Verificar se o caminho é um diretório
+    if os.path.isdir(abs_path):
+        files = os.listdir(abs_path)
+        return jsonify(files)
+    elif os.path.isfile(abs_path):
+        return send_from_directory(BASE_DIR, req_path)
+    else:
+        return jsonify({"error": "Caminho não encontrado"}), 404
 
 @app.route('/')
 def home():
