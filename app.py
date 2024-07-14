@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, redirect, url_for, send_file
+from flask import Flask, request, jsonify, render_template, redirect, url_for, send_file
 from threading import Thread
 import os
 import time
