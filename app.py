@@ -10,7 +10,7 @@ import pytz
 import pandas as pd
 
 manaus = pytz.timezone("America/Manaus") 
-now = datetime.today(manaus).strftime('%d-%m-%Y')
+now = datetime.today().strftime('%d-%m-%Y')
 #now = "18-07-2024"
 
 primeiro_dia = "14-07-2024"
