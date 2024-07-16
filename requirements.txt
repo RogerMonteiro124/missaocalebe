@@ -3,4 +3,3 @@ pandas
 gunicorn
 openpyxl
 pytz
-backports.zoneinfo
