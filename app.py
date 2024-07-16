@@ -23,7 +23,7 @@ print(next_14_days)
 app = Flask(__name__)
 
 def now():
-  now = str(datetime.now(ZoneInfor("America/Manaus")).strftime("%d-%m-%Y")).split(" ")[0]))
+  now = str(datetime.now(ZoneInfor("America/Manaus")).strftime("%d-%m-%Y")).split(" ")[0]
 
   return now
 
