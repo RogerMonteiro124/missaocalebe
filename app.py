@@ -8,19 +8,24 @@ from datetime import datetime
 import random
 import pytz
 import pandas as pd
+from zoneinfo import ZoneInfo
 
-manaus = pytz.timezone("America/Manaus") 
+#manaus = pytz.timezone("America/Manaus") 
 #now = datetime.today().strftime('%d-%m-%Y')
-now = "15-07-2024"
+#now = "15-07-2024"
 
 primeiro_dia = "14-07-2024"
 next_14_days = get_next_14_days(primeiro_dia)
 
-print(now)
+#print(now)
 print(next_14_days)
 
 app = Flask(__name__)
 
+def now():
+  now = str(datetime.now(ZoneInfor("America/Manaus")).strftime("%d-%m-%Y")).split(" ")[0]))
+
+  return now
 
 def obter_nome_arquivo_csv(dia):
   pasta_sorteio = "sorteio"
@@ -52,12 +57,12 @@ def list_files(req_path):
 
 @app.route('/')
 def home():
-  return 'I am Alive in ' + str(now)
+  return 'I am Alive in ' + str(now())
 
 
 @app.route('/index')
 def index():
-  return render_template('index.html', today=now)
+  return render_template('index.html', today=now())
 
 
 @app.route('/add')
@@ -70,7 +75,7 @@ def realizar_sorteio():
   data = request.get_json()
   time.sleep(2)
   quantidade_sorteados = int(data['quantidadeSorteados'])
-  hoje = now.replace("/", "-")
+  hoje = now().replace("/", "-")
 
   # Ler o arquivo CSV correspondente ao dia do sorteio
   nome_arquivo = obter_nome_arquivo_csv(hoje)
@@ -105,7 +110,7 @@ def realizar_sorteio():
 
 @app.route('/sorteio')
 def sorteio():
-  hoje = now.replace("/", "-")
+  hoje = now().replace("/", "-")
   pessoas_presentes = []
 
   # Ler o arquivo CSV correspondente ao dia do sorteio
@@ -128,7 +133,7 @@ def sorteio():
 
   return render_template('sorteio.html',
                          pessoas_presentes=pessoas_presentes,
-                         now=now)
+                         now=now())
 
 
 @app.route('/criar_excel')
@@ -224,7 +229,7 @@ def marcar_presenca():
   if nome is None:
     return {'success': False, 'message': 'Pessoa não encontrada.'}
 
-  data_sorteio = now
+  data_sorteio = now()
   if data_sorteio is None:
     return {'success': False, 'message': 'Data do sorteio não encontrada.'}
 
@@ -278,7 +283,7 @@ def letter(selected_letter):
                          selected_letter=selected_letter,
                          pessoas=pessoas_com_selected_letter,
                          next_14_days=next_14_days,
-                        now=now)
+                        now=now())
 
 
 def run():
