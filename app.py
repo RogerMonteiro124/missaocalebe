@@ -46,7 +46,7 @@ def list_files(req_path):
     if os.path.isdir(abs_path):
         files = os.listdir(abs_path)
         files_list = [
-            f'<li><a href="/list_files/{req_path}/{file}">{file}</a></li>'
+            f'<li><a href="/edit_file/{req_path}/{file}">{file}</a></li>'
             for file in files
         ]
         return render_template_string('<ul>' + ''.join(files_list) + '</ul>')
@@ -54,6 +54,30 @@ def list_files(req_path):
         return send_from_directory(BASE_DIR, req_path)
     else:
         return jsonify({"error": "Caminho não encontrado"}), 404
+
+# Rota para editar um arquivo
+@app.route('/edit_file/<path:file_path>', methods=['GET', 'POST'])
+def edit_file(file_path):
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    abs_path = os.path.join(BASE_DIR, file_path)
+
+    if request.method == 'POST':
+        content = request.form['content']
+        with open(abs_path, 'w') as file:
+            file.write(content)
+        return jsonify({"message": "Arquivo salvo com sucesso"})
+
+    if os.path.isfile(abs_path):
+        with open(abs_path, 'r') as file:
+            content = file.read()
+        return render_template_string('''
+            <form method="POST">
+                <textarea name="content" style="width:100%; height:80vh;">{{ content }}</textarea><br>
+                <input type="submit" value="Salvar">
+            </form>
+        ''', content=content)
+    else:
+        return jsonify({"error": "Arquivo não encontrado"}), 404
 
 @app.route('/')
 def home():
