@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 #now = datetime.today().strftime('%d-%m-%Y')
 #now = "15-07-2024"
 
-primeiro_dia = "03-07-2025"
+primeiro_dia = "06-07-2025"
 next_14_days = get_next_14_days(primeiro_dia)
 
 #print(now)
