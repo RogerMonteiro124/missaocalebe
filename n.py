@@ -4,8 +4,9 @@ from werkzeug.security import generate_password_hash
 from hashlib import sha256 
 
 # --- CONFIGURAÇÃO DE SEGURANÇA (MUDAR ANTES DE PRODUÇÃO) ---
-PASSWORD_TO_HASH = "minha_senha_super_secreta_123"
-ADMIN_PASSWORD_HASH = generate_password_hash(PASSWORD_TO_HASH)
+# Senha usada para gerar o hash: 'admin123'
+ADMIN_USER = 'admin'
+ADMIN_PASSWORD_HASH = generate_password_hash('admin123')
 # -----------------------------------------------------------
 
 # Estrutura de diretórios a ser criada
@@ -19,7 +20,9 @@ STRUCTURE = {
             "admin": {}
         },
         "static": {
-            "css": {},
+            "css": {
+                "style.css": ""
+            },
             "images": { 
                 "corridas": {},
                 "blog": {} 
@@ -30,16 +33,16 @@ STRUCTURE = {
 
 # Conteúdo dos arquivos (string formatada com f-string)
 FILES = {
-    # --- ARQUIVOS RAIZ (USANDO VERSÕES ESTÁVEIS E COMPATÍVEIS) ---
+    # --- ARQUIVOS RAIZ (ADICIONANDO FLASK-HTTPAUTH) ---
     f"{PROJECT_NAME}/requirements.txt": textwrap.dedent("""
         Flask==2.3.3
-        SQLAlchemy==1.4.49       # VERSÃO ESTÁVEL PARA MAIOR COMPATIBILIDADE
-        Flask-SQLAlchemy==3.0.5  # VERSÃO COMPATÍVEL COM SQLALCHEMY 1.4
+        SQLAlchemy==1.4.49
+        Flask-SQLAlchemy==3.0.5
         Flask-Admin==1.6.1
         gunicorn==21.2.0
         python-slugify==8.0.1
-        Flask-HTTPAuth==4.8.0    # VERSÃO CORRIGIDA PARA O ERRO 'safe_str_cmp'
-        werkzeug==2.3.7          # Versão base
+        werkzeug==2.3.7
+        Flask-HTTPAuth==4.8.0  # RE-ADICIONADO PARA AUTENTICAÇÃO BÁSICA
     """).strip(),
     
     f"{PROJECT_NAME}/config.py": textwrap.dedent("""
@@ -112,7 +115,7 @@ FILES = {
             return render_template('blog/blog_postagem.html', post=post)
     """).strip(),
 
-    # --- APP.PY (Com fix do Flask-Admin e novo Mixin) ---
+    # --- APP.PY (Com AUTENTICAÇÃO BÁSICA) ---
     f"{PROJECT_NAME}/app.py": textwrap.dedent(f"""
         from flask import Flask, render_template, request, url_for
         from config import Config
@@ -120,8 +123,12 @@ FILES = {
         from flask_admin import Admin, BaseView, expose
         from flask_admin.contrib.sqla import ModelView
         from slugify import slugify
+        
+        # --- Imports de Segurança ---
         from flask_httpauth import HTTPBasicAuth
-        from werkzeug.security import generate_password_hash, check_password_hash
+        from werkzeug.security import check_password_hash
+        # ---------------------------
+
         from werkzeug.utils import secure_filename
         from datetime import datetime, timedelta
         from hashlib import sha256
@@ -133,36 +140,35 @@ FILES = {
         import os
 
         # -----------------------------------------------------------------
-        # 1. SEGURANÇA DO ADMIN
+        # 1. SEGURANÇA DO ADMIN (Autenticação Básica)
         # -----------------------------------------------------------------
+        ADMIN_USER = 'admin'
+        # HASH DA SENHA 'admin123'
+        ADMIN_PASSWORD_HASH = '{ADMIN_PASSWORD_HASH}' 
         auth = HTTPBasicAuth()
-        # Senha padrão hashada: {PASSWORD_TO_HASH} (MUDAR)
-        USERS = {{
-            "admin_correruar": "{ADMIN_PASSWORD_HASH}" 
-        }}
 
         @auth.verify_password
         def verify_password(username, password):
-            if username in USERS and check_password_hash(USERS.get(username), password):
+            if username == ADMIN_USER and check_password_hash(ADMIN_PASSWORD_HASH, password):
                 return username
             return None
 
-        # NOVO MIXIN: Garante que apenas a parte de segurança seja herdada, sem forçar ModelView
-        class AdminSecuredViewMixin(object):
+        # Mixin de Segurança para proteger as views do Flask-Admin
+        class AdminSecuredViewMixin:
             def is_accessible(self):
+                # Verifica se o usuário atual foi autenticado pelo HTTPBasicAuth
                 return auth.current_user() is not None
+            
             def inaccessible_callback(self, name, **kwargs):
-                return auth.challenge_auth()
-
-        class AdminSecuredView(AdminSecuredViewMixin, ModelView):
-            pass
+                # Se não estiver logado, dispara o desafio Basic Auth do navegador
+                return auth.auth_error_handler() 
 
         # -----------------------------------------------------------------
         # 2. ADMIN VIEWS (CRUD, SLUG e Patrocínio)
+        # As views herdam do Mixin de segurança
         # -----------------------------------------------------------------
-        class CorridaAdminView(AdminSecuredView):
+        class CorridaAdminView(AdminSecuredViewMixin, ModelView): 
             column_list = ('nome', 'data', 'local', 'valor', 'distancia', 'is_patrocinada', 'imagem') 
-            # Cadastro manual (via painel)
             form_columns = ['nome', 'slug', 'data', 'local', 'distancia', 'valor', 'descricao_detalhada', 'link_inscricao', 'is_patrocinada', 'imagem']
             column_labels = dict(is_patrocinada='Patrocinada', nome='Nome', valor='Valor (R$)', link_inscricao='Link Inscrição', imagem='Nome do Arquivo de Imagem (static/images/corridas)')
             
@@ -173,7 +179,7 @@ FILES = {
                     model.imagem = secure_filename(model.imagem)
                 super(CorridaAdminView, self).on_model_change(form, model, is_created)
 
-        class PostagemAdminView(AdminSecuredView):
+        class PostagemAdminView(AdminSecuredViewMixin, ModelView): 
             column_list = ('titulo', 'data_publicacao', 'is_patrocinado', 'imagem_capa')
             form_columns = ['titulo', 'slug', 'data_publicacao', 'is_patrocinado', 'imagem_capa', 'conteudo']
             column_labels = dict(is_patrocinado='Post Patrocinado', titulo='Título', imagem_capa='Imagem de Capa (static/images/blog)')
@@ -186,7 +192,7 @@ FILES = {
                 super(PostagemAdminView, self).on_model_change(form, model, is_created)
         
         # -----------------------------------------------------------------
-        # 3. ANALYTICS VIEW (Agora herda de BaseView e do novo Mixin)
+        # 3. ANALYTICS VIEW
         # -----------------------------------------------------------------
         class AnalyticsView(AdminSecuredViewMixin, BaseView):
             @expose('/')
@@ -203,6 +209,7 @@ FILES = {
                 return self.render('admin/analytics_dashboard.html', total_acessos=total_acessos, acessos_7dias=acessos_7dias, top_rotas=top_rotas)
 
         def log_acesso(endpoint):
+            # Implementação do log de acesso, mantida como estava
             ip_addr = request.headers.get('X-Forwarded-For', request.remote_addr)
             ip_hash = sha256(ip_addr.encode()).hexdigest()
             hoje = datetime.utcnow().date()
@@ -224,7 +231,7 @@ FILES = {
         def allowed_file(filename, allowed_extensions):
             return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
-        class ImportView(AdminSecuredViewMixin, BaseView): # Herda de BaseView e Mixin
+        class ImportView(AdminSecuredViewMixin, BaseView): 
             @expose('/', methods=('GET', 'POST'))
             def index(self):
                 if request.method == 'POST':
@@ -241,10 +248,6 @@ FILES = {
                         
                         rows_imported = 0
                         for row in csv_reader:
-                            # Colunas esperadas: 
-                            # 0:nome; 1:data(DD/MM/AAAA); 2:local; 3:valor; 4:distancia; 
-                            # 5:descricao_detalhada; 6:link_inscricao; 7:is_patrocinada; 8:nome_arquivo_imagem
-                            
                             data_obj = datetime.strptime(row[1], '%d/%m/%Y').date() 
                             valor_float = float(row[3].replace(',', '.')) 
 
@@ -260,7 +263,6 @@ FILES = {
                                 is_patrocinada=True if row[7].lower() in ['sim', 'true', '1'] else False
                             )
                             
-                            # Lógica da Imagem 
                             nome_imagem_csv = row[8].strip() if len(row) > 8 and row[8].strip() else 'default.jpg'
                             corrida.imagem = secure_filename(nome_imagem_csv)
 
@@ -283,9 +285,10 @@ FILES = {
             app.jinja_env.globals.update(now=datetime.now)
 
             admin = Admin(app, name='Admin - Correr na Rua', template_mode='bootstrap3', url='/admin')
+            
+            # Views adicionadas: AGORA COM SEGURANÇA BÁSICA ATIVA
             admin.add_view(CorridaAdminView(Corrida, db.session, name='Corridas (Manual)')) 
             admin.add_view(PostagemAdminView(Postagem, db.session, name='Blog'))
-            # Não exige model nem session, pois herda de BaseView + Mixin
             admin.add_view(AnalyticsView(name='Visão de Acessos', endpoint='analytics'))
             admin.add_view(ImportView(name='Importar Corridas (CSV)', endpoint='import_csv')) 
             
@@ -330,7 +333,7 @@ FILES = {
             app.run(debug=True)
     """).strip(),
     
-    # --- TEMPLATES E CSS (SEM ALTERAÇÕES NAS ESTRUTURAS) ---
+    # --- TEMPLATES, CSS e outros arquivos (SEM ALTERAÇÕES) ---
     f"{PROJECT_NAME}/templates/base.html": textwrap.dedent("""
         <!DOCTYPE html>
         <html lang="pt-br">
@@ -1014,6 +1017,9 @@ if __name__ == "__main__":
         pass
     
     print("\n--- ✅ PROJETO CRIADO COM SUCESSO! ---")
-    print("Por favor, siga os passos abaixo para garantir o funcionamento:")
+    print("\n⚠️ NOVO PASSO DE INSTALAÇÃO: A dependência `Flask-HTTPAuth` foi adicionada.")
     print("1. Na pasta do projeto, execute: **pip install -r requirements.txt --force-reinstall**")
     print("2. Execute o projeto: **python app.py**")
+    print("\nPara acessar o painel em /admin, use:")
+    print(f"   **Usuário:** {ADMIN_USER}")
+    print(f"   **Senha:** admin123")
