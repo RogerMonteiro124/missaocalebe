@@ -1,7 +1,7 @@
 import os
 import textwrap
 from werkzeug.security import generate_password_hash
-from hashlib import sha256 # Adicionando sha256 para gerar o hash do IP no models.py
+from hashlib import sha256 
 
 # --- CONFIGURAÇÃO DE SEGURANÇA (MUDAR ANTES DE PRODUÇÃO) ---
 PASSWORD_TO_HASH = "minha_senha_super_secreta_123"
@@ -20,8 +20,9 @@ STRUCTURE = {
         },
         "static": {
             "css": {},
-            "images": { # Nova estrutura de imagens
-                "corridas": {}
+            "images": { 
+                "corridas": {},
+                "blog": {} # NOVA PASTA PARA IMAGENS DO BLOG
             }
         }
     }
@@ -57,7 +58,7 @@ FILES = {
 
         db = SQLAlchemy()
 
-        # Modelo de Corridas (NOVO campo 'imagem')
+        # Modelo de Corridas (Com campo imagem)
         class Corrida(db.Model):
             id = db.Column(db.Integer, primary_key=True)
             nome = db.Column(db.String(120), nullable=False)
@@ -69,9 +70,9 @@ FILES = {
             descricao_detalhada = db.Column(db.Text, nullable=False)
             link_inscricao = db.Column(db.String(255), nullable=False)
             is_patrocinada = db.Column(db.Boolean, default=False)
-            imagem = db.Column(db.String(120), nullable=True, default='default.jpg') # Nome do arquivo de imagem
+            imagem = db.Column(db.String(120), nullable=True, default='default.jpg')
             
-        # Modelo de Postagens do Blog
+        # Modelo de Postagens do Blog (Com campo imagem_capa opcional)
         class Postagem(db.Model):
             id = db.Column(db.Integer, primary_key=True)
             titulo = db.Column(db.String(150), nullable=False)
@@ -79,6 +80,7 @@ FILES = {
             data_publicacao = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
             conteudo = db.Column(db.Text, nullable=False)
             is_patrocinado = db.Column(db.Boolean, default=False) 
+            imagem_capa = db.Column(db.String(120), nullable=True) # Nome do arquivo de imagem do blog (opcional)
 
         # Modelo de Log de Acessos
         class Acesso(db.Model):
@@ -156,22 +158,30 @@ FILES = {
         # -----------------------------------------------------------------
         class CorridaAdminView(AdminSecuredView):
             column_list = ('nome', 'data', 'local', 'valor', 'distancia', 'is_patrocinada', 'imagem') 
+            # Cadastro manual (via painel)
             form_columns = ['nome', 'slug', 'data', 'local', 'distancia', 'valor', 'descricao_detalhada', 'link_inscricao', 'is_patrocinada', 'imagem']
-            column_labels = dict(is_patrocinada='Patrocinada', nome='Nome', valor='Valor (R$)', link_inscricao='Link Inscrição', imagem='Nome do Arquivo de Imagem')
+            column_labels = dict(is_patrocinada='Patrocinada', nome='Nome', valor='Valor (R$)', link_inscricao='Link Inscrição', imagem='Nome do Arquivo de Imagem (static/images/corridas)')
             
             def on_model_change(self, form, model, is_created):
                 if not model.slug: model.slug = slugify(model.nome)
                 model.slug = slugify(model.slug)
+                # Garante que a imagem tenha um nome seguro
+                if model.imagem:
+                    model.imagem = secure_filename(model.imagem)
                 super(CorridaAdminView, self).on_model_change(form, model, is_created)
 
         class PostagemAdminView(AdminSecuredView):
-            column_list = ('titulo', 'data_publicacao', 'is_patrocinado')
-            form_columns = ['titulo', 'slug', 'data_publicacao', 'is_patrocinado', 'conteudo']
-            column_labels = dict(is_patrocinado='Post Patrocinado', titulo='Título')
+            column_list = ('titulo', 'data_publicacao', 'is_patrocinado', 'imagem_capa')
+            # Inclui imagem_capa
+            form_columns = ['titulo', 'slug', 'data_publicacao', 'is_patrocinado', 'imagem_capa', 'conteudo']
+            column_labels = dict(is_patrocinado='Post Patrocinado', titulo='Título', imagem_capa='Imagem de Capa (static/images/blog)')
             
             def on_model_change(self, form, model, is_created):
                 if not model.slug: model.slug = slugify(model.titulo)
                 model.slug = slugify(model.slug)
+                # Garante que a imagem tenha um nome seguro (se existir)
+                if model.imagem_capa:
+                    model.imagem_capa = secure_filename(model.imagem_capa)
                 super(PostagemAdminView, self).on_model_change(form, model, is_created)
         
         # -----------------------------------------------------------------
@@ -206,7 +216,7 @@ FILES = {
                 except Exception: db.session.rollback()
 
         # -----------------------------------------------------------------
-        # 4. ADMIN VIEW: Importação CSV
+        # 4. ADMIN VIEW: Importação CSV (Cadastro em Massa)
         # -----------------------------------------------------------------
         ALLOWED_EXTENSIONS_CSV = {{'csv'}}
         
@@ -217,54 +227,51 @@ FILES = {
             @expose('/', methods=('GET', 'POST'))
             def index(self):
                 if request.method == 'POST':
-                    if 'file' not in request.files:
-                        return self.render('admin/import_csv.html', message='Nenhum arquivo enviado.')
+                    file = request.files.get('file')
                     
-                    file = request.files['file']
-                    if file.filename == '':
-                        return self.render('admin/import_csv.html', message='Nenhum arquivo selecionado.')
+                    if not file or file.filename == '' or not allowed_file(file.filename, ALLOWED_EXTENSIONS_CSV):
+                        return self.render('admin/import_csv.html', message='❌ Arquivo inválido ou não selecionado.', success=False)
                     
-                    if file and allowed_file(file.filename, ALLOWED_EXTENSIONS_CSV):
-                        try:
-                            # Leitura do CSV
-                            stream = io.StringIO(file.stream.read().decode("UTF8"), newline=None)
-                            csv_reader = csv.reader(stream, delimiter=';') 
-                            header = next(csv_reader) # Pula o cabeçalho
+                    try:
+                        # Leitura do CSV
+                        stream = io.StringIO(file.stream.read().decode("UTF8"), newline=None)
+                        csv_reader = csv.reader(stream, delimiter=';') 
+                        header = next(csv_reader) # Pula o cabeçalho
+                        
+                        rows_imported = 0
+                        for row in csv_reader:
+                            # Colunas esperadas: 
+                            # 0:nome; 1:data(DD/MM/AAAA); 2:local; 3:valor; 4:distancia; 
+                            # 5:descricao_detalhada; 6:link_inscricao; 7:is_patrocinada; 8:nome_arquivo_imagem
                             
-                            rows_imported = 0
-                            for row in csv_reader:
-                                # Colunas esperadas: 
-                                # 0:nome; 1:data(DD/MM/AAAA); 2:local; 3:valor; 4:distancia; 
-                                # 5:descricao_detalhada; 6:link_inscricao; 7:is_patrocinada; 8:nome_arquivo_imagem
-                                
-                                data_obj = datetime.strptime(row[1], '%d/%m/%Y').date() 
-                                valor_float = float(row[3].replace(',', '.')) 
+                            data_obj = datetime.strptime(row[1], '%d/%m/%Y').date() 
+                            valor_float = float(row[3].replace(',', '.')) 
 
-                                corrida = Corrida(
-                                    nome=row[0],
-                                    slug=slugify(row[0]), 
-                                    data=data_obj,
-                                    local=row[2],
-                                    valor=valor_float,
-                                    distancia=row[4],
-                                    descricao_detalhada=row[5],
-                                    link_inscricao=row[6],
-                                    is_patrocinada=True if row[7].lower() in ['sim', 'true', '1'] else False
-                                )
-                                
-                                # Lógica da Imagem (referencia o nome do arquivo)
-                                nome_imagem_csv = row[8].strip() if len(row) > 8 else 'default.jpg'
-                                corrida.imagem = secure_filename(nome_imagem_csv)
-
-                                db.session.add(corrida)
-                                rows_imported += 1
-
-                            db.session.commit()
-                            return self.render('admin/import_csv.html', message=f'✅ Sucesso! {{rows_imported}} corridas importadas.', success=True)
+                            corrida = Corrida(
+                                nome=row[0],
+                                slug=slugify(row[0]), 
+                                data=data_obj,
+                                local=row[2],
+                                valor=valor_float,
+                                distancia=row[4],
+                                descricao_detalhada=row[5],
+                                link_inscricao=row[6],
+                                is_patrocinada=True if row[7].lower() in ['sim', 'true', '1'] else False
+                            )
                             
-                        except Exception as e:
-                            db.session.rollback()
-                            return self.render('admin/import_csv.html', message=f'❌ Erro na importação: {{e}}. Verifique o formato do CSV (separador ";") e a ordem das colunas.', success=False)
+                            # Lógica da Imagem 
+                            nome_imagem_csv = row[8].strip() if len(row) > 8 and row[8].strip() else 'default.jpg'
+                            corrida.imagem = secure_filename(nome_imagem_csv)
+
+                            db.session.add(corrida)
+                            rows_imported += 1
+
+                        db.session.commit()
+                        return self.render('admin/import_csv.html', message=f'✅ Sucesso! {{rows_imported}} corridas importadas.', success=True)
+                        
+                    except Exception as e:
+                        db.session.rollback()
+                        return self.render('admin/import_csv.html', message=f'❌ Erro na importação: {{e}}. Verifique o formato do CSV (separador ";") e a ordem das colunas.', success=False)
 
                 return self.render('admin/import_csv.html', message='Aguardando upload do CSV.')
 
@@ -275,10 +282,10 @@ FILES = {
             app.jinja_env.globals.update(now=datetime.now)
 
             admin = Admin(app, name='Admin - Correr na Rua', template_mode='bootstrap3', url='/admin')
-            admin.add_view(CorridaAdminView(Corrida, db.session, name='Corridas'))
+            admin.add_view(CorridaAdminView(Corrida, db.session, name='Corridas (Manual)')) # Alterado o nome para 'Manual'
             admin.add_view(PostagemAdminView(Postagem, db.session, name='Blog'))
             admin.add_view(AnalyticsView(name='Visão de Acessos', endpoint='analytics'))
-            admin.add_view(ImportView(name='Importar Corridas', endpoint='import_csv'))
+            admin.add_view(ImportView(name='Importar Corridas (CSV)', endpoint='import_csv')) # Adicionado
             
             app.register_blueprint(blog_bp)
             
@@ -417,12 +424,23 @@ FILES = {
             <h2 style="margin-top: 50px;">📰 Últimos Posts do Blog</h2>
             <div class="posts-grid">
                 {% for post in posts %}
-                <a href="{{ url_for('blog.postagem', slug=post.slug) }}" class="card {% if post.is_patrocinado %}patrocinado{% endif %}">
+                <a href="{{ url_for('blog.postagem', slug=post.slug) }}" class="card blog-card {% if post.is_patrocinado %}patrocinado{% endif %}">
                     {% if post.is_patrocinado %}
                         <span class="patrocinado-label">POST PATROCINADO</span>
                     {% endif %}
-                    <h2>{{ post.titulo }}</h2>
-                    <p>🗓️ **Publicado em:** {{ post.data_publicacao.strftime('%d/%m/%Y') }}</p>
+                    
+                    {% if post.imagem_capa %}
+                        <div class="card-image-wrapper">
+                            <img src="{{ url_for('static', filename='images/blog/' + post.imagem_capa) }}" 
+                                 alt="Imagem de Capa do post {{ post.titulo }}" 
+                                 class="card-image">
+                        </div>
+                    {% endif %}
+                    
+                    <div class="card-content-body">
+                        <h2>{{ post.titulo }}</h2>
+                        <p>🗓️ **Publicado em:** {{ post.data_publicacao.strftime('%d/%m/%Y') }}</p>
+                    </div>
                 </a>
                 {% endfor %}
             </div>
@@ -703,12 +721,23 @@ FILES = {
             
             <div class="posts-grid">
                 {% for post in posts %}
-                <a href="{{ url_for('blog.postagem', slug=post.slug) }}" class="card {% if post.is_patrocinado %}patrocinado{% endif %}">
+                <a href="{{ url_for('blog.postagem', slug=post.slug) }}" class="card blog-card {% if post.is_patrocinado %}patrocinado{% endif %}">
                     {% if post.is_patrocinado %}
                         <span class="patrocinado-label">POST PATROCINADO</span>
                     {% endif %}
-                    <h2>{{ post.titulo }}</h2>
-                    <p>🗓️ **Publicado em:** {{ post.data_publicacao.strftime('%d/%m/%Y') }}</p>
+                    
+                    {% if post.imagem_capa %}
+                        <div class="card-image-wrapper">
+                            <img src="{{ url_for('static', filename='images/blog/' + post.imagem_capa) }}" 
+                                 alt="Imagem de Capa do post {{ post.titulo }}" 
+                                 class="card-image">
+                        </div>
+                    {% endif %}
+
+                    <div class="card-content-body">
+                        <h2>{{ post.titulo }}</h2>
+                        <p>🗓️ **Publicado em:** {{ post.data_publicacao.strftime('%d/%m/%Y') }}</p>
+                    </div>
                 </a>
                 {% else %}
                 <p>Nenhum post no blog ainda. Em breve teremos novidades!</p>
@@ -725,6 +754,14 @@ FILES = {
         {% block content %}
             <div class="post-container">
                 <header class="detalhe-header" style="text-align: left;">
+                    {% if post.imagem_capa %}
+                        <div class="text-center mb-4">
+                            <img src="{{ url_for('static', filename='images/blog/' + post.imagem_capa) }}" 
+                                 alt="Imagem de capa do post" 
+                                 class="img-fluid" 
+                                 style="max-width: 100%; height: auto; border-radius: 8px;">
+                        </div>
+                    {% endif %}
                     <h1>{{ post.titulo }}</h1>
                     <p class="data-local">Publicado em: {{ post.data_publicacao.strftime('%d de %B de %Y') }}</p>
                     {% if post.is_patrocinado %}
@@ -746,7 +783,7 @@ FILES = {
     """).strip(),
 
 
-    # --- CSS (COM ESTILO PARA IMAGEM DO CARD) ---
+    # --- CSS (COM ESTILO PARA IMAGEM DO CARD E BLOG) ---
     f"{PROJECT_NAME}/static/css/style.css": textwrap.dedent(
         """
         /* static/css/style.css */
@@ -793,35 +830,37 @@ FILES = {
         .card {
             display: block; 
             background-color: var(--card-bg);
-            padding: 0; /* Removido o padding geral para envolver a imagem */
+            padding: 0; 
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
             transition: transform 0.2s, box-shadow 0.2s;
             text-decoration: none; 
             color: #333;
-            overflow: hidden; /* Importante para o border-radius e imagem */
+            overflow: hidden; 
+            height: 100%; /* Garante que os cards da grade tenham altura uniforme */
         }
         .card:hover { transform: translateY(-3px); box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15); }
         
         /* Estilo do Conteúdo de Texto do Card */
-        .corrida-card .card-content-body {
-            padding: 15px 20px; /* Adiciona o padding apenas ao texto */
+        .corrida-card .card-content-body, .blog-card .card-content-body {
+            padding: 15px 20px; 
+            flex-grow: 1; /* Garante que o corpo ocupe o espaço restante */
         }
         
-        /* Imagem do Card */
+        /* Imagem do Card (Corridas e Blog) */
         .card-image-wrapper {
             width: 100%;
-            height: 180px; /* Altura fixa para uniformizar a grade */
+            height: 180px; 
             overflow: hidden;
         }
         .card-image {
             width: 100%;
             height: 100%;
-            object-fit: cover; /* Garante que a imagem preencha o espaço sem distorcer */
+            object-fit: cover; 
             transition: transform 0.3s;
         }
-        .corrida-card:hover .card-image {
-            transform: scale(1.05); /* Efeito suave de zoom no hover */
+        .corrida-card:hover .card-image, .blog-card:hover .card-image {
+            transform: scale(1.05); 
         }
 
         .card h2 { color: var(--primary-color); margin-bottom: 10px; font-size: 1.2em; }
@@ -860,6 +899,14 @@ FILES = {
             border-radius: 10px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); 
         }
+        
+        /* Imagem de Destaque no Detalhe */
+        .post-container img, .detalhe-corrida-container img {
+             /* Remove o estilo inline se estiver presente, e garante que a imagem de destaque do post seja responsiva */
+             width: 100%;
+             height: auto;
+        }
+
 
         .detalhe-header { text-align: center; margin-bottom: 25px; }
         .detalhe-header h1 { font-size: 2em; color: var(--primary-color); margin-bottom: 5px; }
@@ -953,16 +1000,24 @@ if __name__ == "__main__":
     # 3. Criar e preencher os arquivos
     create_files(FILES)
     
-    # 4. Cria um arquivo 'default.jpg' de placeholder para evitar erros na primeira execução
+    # 4. Cria arquivos 'default.jpg' de placeholder para evitar erros na primeira execução
     try:
-        placeholder_path = os.path.join(PROJECT_NAME, "static", "images", "corridas", "default.jpg")
-        with open(placeholder_path, "w") as f:
-             f.write("")
-        print(f"✅ Criado: Placeholder de imagem ({os.path.basename(placeholder_path)})")
+        placeholder_corrida_path = os.path.join(PROJECT_NAME, "static", "images", "corridas", "default.jpg")
+        with open(placeholder_corrida_path, "w") as f: f.write("")
+        print(f"✅ Criado: Placeholder de imagem de corrida.")
+        
+        placeholder_blog_path = os.path.join(PROJECT_NAME, "static", "images", "blog", "default_blog.jpg")
+        with open(placeholder_blog_path, "w") as f: f.write("")
+        print(f"✅ Criado: Placeholder de imagem de blog.")
     except:
         pass
     
     print("\n--- ✅ PROJETO CRIADO COM SUCESSO! ---")
     print(f"Acesse a pasta '{PROJECT_NAME}' para começar.")
-    print("\nLembre-se de substituir o `default.jpg` por uma imagem real e os IDs de anúncios.")
-
+    print("\nPróximos passos:")
+    print("1. Crie o ambiente e instale as dependências: pip install -r requirements.txt")
+    print("2. Adicione imagens nos diretórios `static/images/corridas` e `static/images/blog`.")
+    print("3. Execute: python app.py")
+    print("\nCredenciais de Admin Padrão:")
+    print(f"Usuário: admin_correruar")
+    print(f"Senha: {PASSWORD_TO_HASH} (MUDAR IMEDIATAMENTE)")
