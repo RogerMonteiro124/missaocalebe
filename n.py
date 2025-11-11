@@ -1,40 +1,44 @@
-Você tem razão! Vou gerar todos os templates faltantes. Aqui está o script completo:
-
-```python
-import os
-import csv
-
-# Estrutura de diretórios
-dirs = [
-    'templates/admin',
-    'templates/blog',
-    'static/css',
-    'static/js',
-    'static/images/corridas',
-    'static/images/blog',
-    'uploads/corridas',
-    'uploads/blog'
-]
-
-for dir in dirs:
-    os.makedirs(dir, exist_ok=True)
-
-# Arquivos principais
-files = {
-    'app.py': '''
-from flask import Flask, render_template, request, redirect, url_for, flash, send_file, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, flash, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import UserMixin, LoginManager, login_user, logout_user, login_required, current_user
 from datetime import datetime
 import os
 import csv
 from io import StringIO
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
+# --- Configurações Iniciais ---
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///corridas.db'
 app.config['SECRET_KEY'] = 'sua_chave_secreta_aqui_mude_em_producao'
 app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'} # Para corridas/blog
+app.config['ALLOWED_ZIP_EXTENSIONS'] = {'zip'} # Para importação de imagens
 
 db = SQLAlchemy(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = "Por favor, faça login para acessar esta página."
+login_manager.login_message_category = "warning"
+
+def allowed_file(filename, allowed_extensions):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in allowed_extensions
+
+# --- Modelos de Dados ---
+class Usuario(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
 class Corrida(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -45,6 +49,7 @@ class Corrida(db.Model):
     distancia = db.Column(db.Float, nullable=False)
     imagem = db.Column(db.String(100))
     descricao = db.Column(db.Text)
+    promovida = db.Column(db.Boolean, default=False) # Nova flag
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Post(db.Model):
@@ -55,25 +60,132 @@ class Post(db.Model):
     imagem = db.Column(db.String(100))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class Promocao(db.Model): # Novo modelo para anúncios/afiliados
+    id = db.Column(db.Integer, primary_key=True)
+    titulo = db.Column(db.String(150), nullable=False)
+    link = db.Column(db.String(255), nullable=False)
+    descricao = db.Column(db.Text)
+    imagem = db.Column(db.String(100))
+    tipo = db.Column(db.String(50), nullable=False) # 'corrida_promovida' ou 'afiliado'
+    ativo = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 class Acesso(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     pagina = db.Column(db.String(50), nullable=False)
     data = db.Column(db.DateTime, default=datetime.utcnow)
     ip = db.Column(db.String(45))
 
+# --- Callbacks do Flask-Login ---
+@login_manager.user_loader
+def load_user(user_id):
+    return Usuario.query.get(int(user_id))
+
+# --- Rotas de Autenticação ---
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('admin'))
+    
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        user = Usuario.query.filter_by(username=username).first()
+        
+        if user and user.check_password(password):
+            login_user(user)
+            flash('Login realizado com sucesso!', 'success')
+            next_page = request.args.get('next')
+            return redirect(next_page or url_for('admin'))
+        else:
+            flash('Usuário ou senha inválidos.', 'error')
+            
+    return render_template('admin/login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('Você saiu da sua conta.', 'info')
+    return redirect(url_for('index'))
+
+# Rota para criar o primeiro usuário admin (remover em produção real ou proteger)
+@app.route('/setup_admin')
+def setup_admin():
+    if Usuario.query.first():
+        flash('Admin já existe.', 'warning')
+        return redirect(url_for('login'))
+    
+    admin_user = Usuario(username='admin', email='admin@exemplo.com')
+    admin_user.set_password('admin_password_123') # MUDE ESTA SENHA IMEDIATAMENTE!
+    db.session.add(admin_user)
+    db.session.commit()
+    flash('Usuário admin criado (admin/admin_password_123). Mude a senha em produção!', 'success')
+    return redirect(url_for('login'))
+
+# --- Funções Auxiliares e Before Request ---
 @app.before_request
 def registrar_acesso():
-    acesso = Acesso(
-        pagina=request.endpoint or 'unknown',
-        ip=request.remote_addr
-    )
-    db.session.add(acesso)
-    db.session.commit()
+    if not request.path.startswith('/uploads/'):
+        acesso = Acesso(
+            pagina=request.endpoint or 'unknown',
+            ip=request.remote_addr
+        )
+        db.session.add(acesso)
+        db.session.commit()
 
+def save_image(file, folder):
+    if file and allowed_file(file.filename, app.config['ALLOWED_EXTENSIONS']):
+        extension = file.filename.rsplit('.', 1)[1].lower()
+        filename = f"{folder}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extension}"
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], folder, filename)
+        file.save(file_path)
+        return filename
+    return None
+
+def delete_image(filename, folder):
+    if filename:
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], folder, filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+# --- Rotas de Visualização (Públicas) ---
 @app.route('/')
 def index():
-    corridas = Corrida.query.filter(Corrida.data >= datetime.now()).order_by(Corrida.data.asc()).all()
-    return render_template('index.html', corridas=corridas)
+    corridas_proximas = Corrida.query.filter(Corrida.data >= datetime.now()).order_by(Corrida.data.asc()).all()
+    promocoes_ativas = Promocao.query.filter_by(ativo=True).all()
+    
+    # Lógica para intercalar corridas e promoções
+    lista_principal = []
+    
+    # Adicionar as corridas promovidas (marcadas no modelo Corrida) no início
+    corridas_promovidas = [c for c in corridas_proximas if c.promovida]
+    corridas_nao_promovidas = [c for c in corridas_proximas if not c.promovida]
+    
+    lista_principal.extend(corridas_promovidas)
+    
+    # Intercalar corridas não promovidas com anúncios/afiliados
+    idx_corrida = 0
+    idx_promocao = 0
+    
+    # Adiciona uma promoção a cada 3 corridas (exemplo)
+    while idx_corrida < len(corridas_nao_promovidas) or idx_promocao < len(promocoes_ativas):
+        # Adiciona até 3 corridas
+        for _ in range(3):
+            if idx_corrida < len(corridas_nao_promovidas):
+                lista_principal.append({'tipo': 'corrida', 'item': corridas_nao_promovidas[idx_corrida]})
+                idx_corrida += 1
+            else:
+                break
+                
+        # Adiciona 1 promoção/anúncio
+        if idx_promocao < len(promocoes_ativas):
+            lista_principal.append({'tipo': 'promocao', 'item': promocoes_ativas[idx_promocao]})
+            idx_promocao += 1
+    
+    # Passa a lista intercalada para o template
+    return render_template('index.html', lista_principal=lista_principal)
 
 @app.route('/corrida/<int:id>')
 def corrida_detalhes(id):
@@ -110,8 +222,14 @@ def upload_corridas(filename):
 def upload_blog(filename):
     return send_from_directory('uploads/blog', filename)
 
-# Admin routes
+@app.route('/uploads/promocoes/<filename>')
+def upload_promocoes(filename):
+    return send_from_directory('uploads/promocoes', filename)
+
+
+# --- Rotas de Admin (Protegidas) ---
 @app.route('/admin')
+@login_required
 def admin():
     total_acessos = Acesso.query.count()
     total_corridas = Corrida.query.count()
@@ -125,30 +243,33 @@ def admin():
                          total_posts=total_posts,
                          acessos_hoje=acessos_hoje)
 
+# --- Admin: Corridas ---
 @app.route('/admin/corridas')
+@login_required
 def admin_corridas():
     corridas = Corrida.query.order_by(Corrida.data.asc()).all()
     return render_template('admin/corridas.html', corridas=corridas)
 
 @app.route('/admin/corrida/nova', methods=['GET', 'POST'])
+@login_required
 def nova_corrida():
     if request.method == 'POST':
         try:
+            promovida = request.form.get('promovida') == 'on'
             corrida = Corrida(
                 nome=request.form['nome'],
                 data=datetime.strptime(request.form['data'], '%Y-%m-%dT%H:%M'),
                 local=request.form['local'],
                 valor=float(request.form['valor']),
                 distancia=float(request.form['distancia']),
-                descricao=request.form['descricao']
+                descricao=request.form['descricao'],
+                promovida=promovida
             )
             
             if 'imagem' in request.files:
                 file = request.files['imagem']
-                if file and file.filename:
-                    filename = f"corrida_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file.filename.split('.')[-1]}"
-                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'corridas', filename)
-                    file.save(file_path)
+                filename = save_image(file, 'corridas')
+                if filename:
                     corrida.imagem = filename
             
             db.session.add(corrida)
@@ -161,71 +282,85 @@ def nova_corrida():
     return render_template('admin/nova_corrida.html')
 
 @app.route('/admin/corrida/importar', methods=['GET', 'POST'])
+@login_required
 def importar_corridas():
     if request.method == 'POST':
-        if 'csv' not in request.files:
-            flash('Nenhum arquivo selecionado', 'error')
-            return redirect(request.url)
-        
-        file = request.files['csv']
-        if file.filename == '':
-            flash('Nenhum arquivo selecionado', 'error')
-            return redirect(request.url)
-        
-        if file and file.filename.endswith('.csv'):
-            try:
-                stream = StringIO(file.stream.read().decode("UTF8"), newline=None)
-                csv_reader = csv.DictReader(stream, delimiter=',')
-                corridas_adicionadas = 0
-                
-                for row in csv_reader:
-                    corrida = Corrida(
-                        nome=row['nome'],
-                        data=datetime.strptime(row['data'], '%Y-%m-%d %H:%M:%S'),
-                        local=row['local'],
-                        valor=float(row['valor']),
-                        distancia=float(row['distancia']),
-                        descricao=row.get('descricao', '')
-                    )
-                    db.session.add(corrida)
-                    corridas_adicionadas += 1
-                
-                db.session.commit()
-                flash(f'{corridas_adicionadas} corridas importadas com sucesso!', 'success')
-                return redirect(url_for('admin_corridas'))
-            except Exception as e:
-                flash(f'Erro ao importar CSV: {str(e)}', 'error')
-        else:
-            flash('Por favor, envie um arquivo CSV válido', 'error')
+        # 1. Processar CSV
+        if 'csv' in request.files:
+            file_csv = request.files['csv']
+            if file_csv.filename != '' and file_csv.filename.endswith('.csv'):
+                try:
+                    stream = StringIO(file_csv.stream.read().decode("UTF8"), newline=None)
+                    csv_reader = csv.DictReader(stream, delimiter=',')
+                    corridas_adicionadas = 0
+                    
+                    for row in csv_reader:
+                        # Adapte o formato da data se necessário, mas mantenha o '%Y-%m-%d %H:%M:%S'
+                        # Adicionando um fallback simples para imagem e promovida
+                        promovida_val = row.get('promovida', 'false').lower() in ('true', '1', 'on')
+                        
+                        corrida = Corrida(
+                            nome=row['nome'],
+                            data=datetime.strptime(row['data'], '%Y-%m-%d %H:%M:%S'),
+                            local=row['local'],
+                            valor=float(row['valor']),
+                            distancia=float(row['distancia']),
+                            descricao=row.get('descricao', ''),
+                            imagem=row.get('imagem', None), # Assume que a imagem já foi enviada ou será enviada via ZIP
+                            promovida=promovida_val
+                        )
+                        db.session.add(corrida)
+                        corridas_adicionadas += 1
+                    
+                    db.session.commit()
+                    flash(f'{corridas_adicionadas} corridas do CSV importadas com sucesso! (Verifique as imagens)', 'success')
+                except Exception as e:
+                    flash(f'Erro ao importar CSV: {str(e)}', 'error')
+            else:
+                flash('Por favor, envie um arquivo CSV válido', 'error')
+
+        # 2. Processar Imagens em ZIP (apenas a lógica inicial de upload)
+        if 'imagens_zip' in request.files:
+            file_zip = request.files['imagens_zip']
+            if file_zip.filename != '' and file_zip.filename.endswith('.zip'):
+                # LÓGICA DE EXTRAÇÃO E MATCH DE IMAGENS POR NOME AQUI
+                # Por exemplo: extrair para 'uploads/corridas/' e garantir que o nome da imagem
+                # no CSV corresponda ao nome do arquivo no ZIP.
+                flash('Arquivo ZIP enviado. A lógica de extração e associação de imagens por ZIP precisa ser implementada.', 'warning')
+            elif file_zip.filename != '':
+                 flash('Por favor, envie um arquivo ZIP válido para as imagens', 'error')
+                 
+        return redirect(url_for('admin_corridas'))
     
     return render_template('admin/importar_corridas.html')
 
+
 @app.route('/admin/corrida/editar/<int:id>', methods=['GET', 'POST'])
+@login_required
 def editar_corrida(id):
     corrida = Corrida.query.get_or_404(id)
     
     if request.method == 'POST':
         try:
+            promovida = request.form.get('promovida') == 'on'
+            
             corrida.nome = request.form['nome']
             corrida.data = datetime.strptime(request.form['data'], '%Y-%m-%dT%H:%M')
             corrida.local = request.form['local']
             corrida.valor = float(request.form['valor'])
             corrida.distancia = float(request.form['distancia'])
             corrida.descricao = request.form['descricao']
+            corrida.promovida = promovida
             
             if 'imagem' in request.files:
                 file = request.files['imagem']
                 if file and file.filename:
                     # Remove imagem antiga se existir
-                    if corrida.imagem:
-                        old_path = os.path.join(app.config['UPLOAD_FOLDER'], 'corridas', corrida.imagem)
-                        if os.path.exists(old_path):
-                            os.remove(old_path)
+                    delete_image(corrida.imagem, 'corridas')
                     
-                    filename = f"corrida_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file.filename.split('.')[-1]}"
-                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'corridas', filename)
-                    file.save(file_path)
-                    corrida.imagem = filename
+                    filename = save_image(file, 'corridas')
+                    if filename:
+                        corrida.imagem = filename
             
             db.session.commit()
             flash('Corrida atualizada com sucesso!', 'success')
@@ -236,15 +371,12 @@ def editar_corrida(id):
     return render_template('admin/editar_corrida.html', corrida=corrida)
 
 @app.route('/admin/corrida/excluir/<int:id>')
+@login_required
 def excluir_corrida(id):
     corrida = Corrida.query.get_or_404(id)
     
     try:
-        # Remove imagem se existir
-        if corrida.imagem:
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'corridas', corrida.imagem)
-            if os.path.exists(file_path):
-                os.remove(file_path)
+        delete_image(corrida.imagem, 'corridas')
         
         db.session.delete(corrida)
         db.session.commit()
@@ -254,12 +386,15 @@ def excluir_corrida(id):
     
     return redirect(url_for('admin_corridas'))
 
+# --- Admin: Blog ---
 @app.route('/admin/blog')
+@login_required
 def admin_blog():
     posts = Post.query.order_by(Post.data_publicacao.desc()).all()
     return render_template('admin/blog.html', posts=posts)
 
 @app.route('/admin/blog/novo', methods=['GET', 'POST'])
+@login_required
 def novo_post():
     if request.method == 'POST':
         try:
@@ -270,10 +405,8 @@ def novo_post():
             
             if 'imagem' in request.files:
                 file = request.files['imagem']
-                if file and file.filename:
-                    filename = f"blog_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file.filename.split('.')[-1]}"
-                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'blog', filename)
-                    file.save(file_path)
+                filename = save_image(file, 'blog')
+                if filename:
                     post.imagem = filename
             
             db.session.add(post)
@@ -286,6 +419,7 @@ def novo_post():
     return render_template('admin/novo_post.html')
 
 @app.route('/admin/blog/editar/<int:id>', methods=['GET', 'POST'])
+@login_required
 def editar_post(id):
     post = Post.query.get_or_404(id)
     
@@ -297,16 +431,11 @@ def editar_post(id):
             if 'imagem' in request.files:
                 file = request.files['imagem']
                 if file and file.filename:
-                    # Remove imagem antiga se existir
-                    if post.imagem:
-                        old_path = os.path.join(app.config['UPLOAD_FOLDER'], 'blog', post.imagem)
-                        if os.path.exists(old_path):
-                            os.remove(old_path)
+                    delete_image(post.imagem, 'blog')
                     
-                    filename = f"blog_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file.filename.split('.')[-1]}"
-                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'blog', filename)
-                    file.save(file_path)
-                    post.imagem = filename
+                    filename = save_image(file, 'blog')
+                    if filename:
+                        post.imagem = filename
             
             db.session.commit()
             flash('Post atualizado com sucesso!', 'success')
@@ -317,15 +446,12 @@ def editar_post(id):
     return render_template('admin/editar_post.html', post=post)
 
 @app.route('/admin/blog/excluir/<int:id>')
+@login_required
 def excluir_post(id):
     post = Post.query.get_or_404(id)
     
     try:
-        # Remove imagem se existir
-        if post.imagem:
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'blog', post.imagem)
-            if os.path.exists(file_path):
-                os.remove(file_path)
+        delete_image(post.imagem, 'blog')
         
         db.session.delete(post)
         db.session.commit()
@@ -335,10 +461,100 @@ def excluir_post(id):
     
     return redirect(url_for('admin_blog'))
 
+
+# --- Admin: Promoções e Anúncios ---
+@app.route('/admin/promocoes')
+@login_required
+def admin_promocoes():
+    promocoes = Promocao.query.order_by(Promocao.created_at.desc()).all()
+    return render_template('admin/promocoes.html', promocoes=promocoes)
+
+@app.route('/admin/promocao/nova', methods=['GET', 'POST'])
+@login_required
+def nova_promocao():
+    if request.method == 'POST':
+        try:
+            ativo = request.form.get('ativo') == 'on'
+            promocao = Promocao(
+                titulo=request.form['titulo'],
+                link=request.form['link'],
+                descricao=request.form['descricao'],
+                tipo=request.form['tipo'],
+                ativo=ativo
+            )
+            
+            if 'imagem' in request.files:
+                file = request.files['imagem']
+                filename = save_image(file, 'promocoes')
+                if filename:
+                    promocao.imagem = filename
+            
+            db.session.add(promocao)
+            db.session.commit()
+            flash('Promoção/Anúncio criado com sucesso!', 'success')
+            return redirect(url_for('admin_promocoes'))
+        except Exception as e:
+            flash(f'Erro ao criar promoção/anúncio: {str(e)}', 'error')
+    
+    return render_template('admin/nova_promocao.html')
+
+@app.route('/admin/promocao/editar/<int:id>', methods=['GET', 'POST'])
+@login_required
+def editar_promocao(id):
+    promocao = Promocao.query.get_or_404(id)
+    
+    if request.method == 'POST':
+        try:
+            ativo = request.form.get('ativo') == 'on'
+            
+            promocao.titulo = request.form['titulo']
+            promocao.link = request.form['link']
+            promocao.descricao = request.form['descricao']
+            promocao.tipo = request.form['tipo']
+            promocao.ativo = ativo
+            
+            if 'imagem' in request.files:
+                file = request.files['imagem']
+                if file and file.filename:
+                    delete_image(promocao.imagem, 'promocoes')
+                    
+                    filename = save_image(file, 'promocoes')
+                    if filename:
+                        promocao.imagem = filename
+            
+            db.session.commit()
+            flash('Promoção/Anúncio atualizado com sucesso!', 'success')
+            return redirect(url_for('admin_promocoes'))
+        except Exception as e:
+            flash(f'Erro ao atualizar promoção/anúncio: {str(e)}', 'error')
+    
+    return render_template('admin/editar_promocao.html', promocao=promocao)
+
+@app.route('/admin/promocao/excluir/<int:id>')
+@login_required
+def excluir_promocao(id):
+    promocao = Promocao.query.get_or_404(id)
+    
+    try:
+        delete_image(promocao.imagem, 'promocoes')
+        
+        db.session.delete(promocao)
+        db.session.commit()
+        flash('Promoção/Anúncio excluído com sucesso!', 'success')
+    except Exception as e:
+        flash(f'Erro ao excluir promoção/anúncio: {str(e)}', 'error')
+    
+    return redirect(url_for('admin_promocoes'))
+
+
+# --- Admin: Estatísticas ---
 @app.route('/admin/estatisticas')
+@login_required
 def estatisticas():
     # Estatísticas básicas
     total_acessos = Acesso.query.count()
+    total_corridas = Corrida.query.count()
+    total_posts = Post.query.count()
     acessos_hoje = Acesso.query.filter(
         Acesso.data >= datetime.today().date()
     ).count()
@@ -352,1268 +568,20 @@ def estatisticas():
     
     return render_template('admin/estatisticas.html',
                          total_acessos=total_acessos,
+                         total_corridas=total_corridas,
+                         total_posts=total_posts,
                          acessos_hoje=acessos_hoje,
                          top_paginas=top_paginas)
 
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        # Chama a rota de setup para criar o admin na primeira execução se não existir
+        if not Usuario.query.first():
+            print("Criando usuário admin padrão: admin / admin_password_123. Mude a senha!")
+            admin_user = Usuario(username='admin', email='admin@exemplo.com')
+            admin_user.set_password('admin124') 
+            db.session.add(admin_user)
+            db.session.commit()
+        
     app.run(host='0.0.0.0', port=5000, debug=False)
-''',
-
-    'requirements.txt': '''
-Flask==2.3.3
-Flask-SQLAlchemy==3.0.5
-''',
-
-    'static/css/style.css': '''
-/* Estilos customizados para Correr na Rua */
-:root {
-    --primary-color: #2c3e50;
-    --secondary-color: #e74c3c;
-    --accent-color: #3498db;
-}
-
-body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background-color: #f8f9fa;
-}
-
-.navbar-brand {
-    font-weight: bold;
-    font-size: 1.5rem;
-}
-
-.card {
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-    border: none;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-}
-
-.card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 5px 20px rgba(0,0,0,0.2);
-}
-
-.card-img-top {
-    height: 200px;
-    object-fit: cover;
-}
-
-.btn-primary {
-    background-color: var(--secondary-color);
-    border-color: var(--secondary-color);
-}
-
-.btn-primary:hover {
-    background-color: #c0392b;
-    border-color: #c0392b;
-}
-
-.hero-section {
-    background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
-    color: white;
-    padding: 60px 0;
-    margin-bottom: 30px;
-}
-
-.admin-stats .card {
-    border-left: 4px solid var(--accent-color);
-}
-
-.corrida-image {
-    max-height: 400px;
-    object-fit: cover;
-    width: 100%;
-}
-
-.blog-post img {
-    max-width: 100%;
-    height: auto;
-}
-
-footer {
-    margin-top: 50px;
-}
-''',
-
-    'templates/base.html': '''
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Correr na Rua - Encontre suas corridas</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/">🏃 Correr na Rua</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item"><a class="nav-link" href="/">Corridas</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/blog">Blog</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/sobre">Sobre</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/admin">Admin</a></li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            <div class="container mt-3">
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ 'danger' if category == 'error' else 'info' }} alert-dismissible fade show">
-                        {{ message }}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                    </div>
-                {% endfor %}
-            </div>
-        {% endif %}
-    {% endwith %}
-
-    {% block content %}{% endblock %}
-
-    <footer class="bg-dark text-light mt-5">
-        <div class="container py-4">
-            <div class="row">
-                <div class="col-md-6">
-                    <h5>Correr na Rua</h5>
-                    <p>Encontre as melhores corridas de rua do Brasil</p>
-                </div>
-                <div class="col-md-6 text-end">
-                    <a href="/termos" class="text-light me-3">Termos de Uso</a> 
-                    <a href="/privacidade" class="text-light">Política de Privacidade</a>
-                </div>
-            </div>
-            <div class="row mt-3">
-                <div class="col-12 text-center">
-                    <small>&copy; 2024 Correr na Rua. Todos os direitos reservados.</small>
-                </div>
-            </div>
-        </div>
-    </footer>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
-''',
-
-    'templates/index.html': '''
-{% extends "base.html" %}
-{% block content %}
-<div class="hero-section">
-    <div class="container text-center">
-        <h1 class="display-4">Encontre Sua Próxima Corrida</h1>
-        <p class="lead">Descubra as melhores corridas de rua perto de você</p>
-    </div>
-</div>
-
-<div class="container mt-4">
-    <h2 class="text-center mb-4">Próximas Corridas</h2>
-    
-    {% if corridas %}
-    <div class="row">
-        {% for corrida in corridas %}
-        <div class="col-md-4 mb-4">
-            <div class="card h-100">
-                {% if corrida.imagem %}
-                <img src="{{ url_for('upload_corridas', filename=corrida.imagem) }}" class="card-img-top" alt="{{ corrida.nome }}">
-                {% else %}
-                <img src="{{ url_for('static', filename='images/corridas/default.jpg') }}" class="card-img-top" alt="Corrida">
-                {% endif %}
-                <div class="card-body d-flex flex-column">
-                    <h5 class="card-title">{{ corrida.nome }}</h5>
-                    <p class="card-text flex-grow-1">
-                        <strong>📅 Data:</strong> {{ corrida.data.strftime('%d/%m/%Y às %H:%M') }}<br>
-                        <strong>📍 Local:</strong> {{ corrida.local }}<br>
-                        <strong>📏 Distância:</strong> {{ corrida.distancia }} km<br>
-                        <strong>💰 Valor:</strong> R$ {{ "%.2f"|format(corrida.valor) }}
-                    </p>
-                    <div class="mt-auto">
-                        <a href="{{ url_for('corrida_detalhes', id=corrida.id) }}" class="btn btn-primary w-100">Ver Detalhes e Inscrever-se</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-    {% else %}
-    <div class="text-center">
-        <h4>Nenhuma corrida encontrada</h4>
-        <p>Volte em breve para conferir novas corridas!</p>
-    </div>
-    {% endif %}
-</div>
-{% endblock %}
-''',
-
-    'templates/corrida_detalhes.html': '''
-{% extends "base.html" %}
-{% block content %}
-<div class="container mt-4">
-    <div class="row">
-        <div class="col-md-8">
-            {% if corrida.imagem %}
-            <img src="{{ url_for('upload_corridas', filename=corrida.imagem) }}" class="corrida-image rounded mb-4" alt="{{ corrida.nome }}">
-            {% endif %}
-            
-            <h1>{{ corrida.nome }}</h1>
-            <div class="row mb-4">
-                <div class="col-md-6">
-                    <p><strong>📅 Data e Hora:</strong><br>{{ corrida.data.strftime('%d/%m/%Y às %H:%M') }}</p>
-                    <p><strong>📍 Local:</strong><br>{{ corrida.local }}</p>
-                </div>
-                <div class="col-md-6">
-                    <p><strong>📏 Distância:</strong><br>{{ corrida.distancia }} km</p>
-                    <p><strong>💰 Valor da Inscrição:</strong><br>R$ {{ "%.2f"|format(corrida.valor) }}</p>
-                </div>
-            </div>
-
-            {% if corrida.descricao %}
-            <div class="mb-4">
-                <h3>Sobre a Corrida</h3>
-                <p>{{ corrida.descricao }}</p>
-            </div>
-            {% endif %}
-        </div>
-        
-        <div class="col-md-4">
-            <div class="card">
-                <div class="card-body">
-                    <h5 class="card-title">Inscreva-se Agora</h5>
-                    <p class="card-text">Garanta sua vaga nesta corrida incrível!</p>
-                    
-                    <form action="#" method="post" id="form-inscricao">
-                        <div class="mb-3">
-                            <label for="nome" class="form-label">Nome Completo</label>
-                            <input type="text" class="form-control" id="nome" name="nome" required>
-                        </div>
-                        <div class="mb-3">
-                            <label for="email" class="form-label">E-mail</label>
-                            <input type="email" class="form-control" id="email" name="email" required>
-                        </div>
-                        <div class="mb-3">
-                            <label for="telefone" class="form-label">Telefone</label>
-                            <input type="tel" class="form-control" id="telefone" name="telefone" required>
-                        </div>
-                        <button type="submit" class="btn btn-primary w-100">Realizar Inscrição</button>
-                    </form>
-                    
-                    <div class="mt-3 text-center">
-                        <small class="text-muted">Você será redirecionado para o pagamento</small>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script>
-document.getElementById('form-inscricao').addEventListener('submit', function(e) {
-    e.preventDefault();
-    alert('Inscrição realizada com sucesso! Em breve você receberá um e-mail com os detalhes do pagamento.');
-    // Aqui você integraria com um gateway de pagamento
-});
-</script>
-{% endblock %}
-''',
-
-    'templates/blog/index.html': '''
-{% extends "base.html" %}
-{% block content %}
-<div class="container mt-4">
-    <h1 class="text-center mb-4">Blog - Correr na Rua</h1>
-    <p class="text-center lead">Dicas, notícias e tudo sobre o mundo das corridas</p>
-    
-    <div class="row">
-        {% for post in posts %}
-        <div class="col-md-6 mb-4">
-            <div class="card h-100">
-                {% if post.imagem %}
-                <img src="{{ url_for('upload_blog', filename=post.imagem) }}" class="card-img-top" alt="{{ post.titulo }}" style="height: 250px; object-fit: cover;">
-                {% endif %}
-                <div class="card-body d-flex flex-column">
-                    <h5 class="card-title">{{ post.titulo }}</h5>
-                    <p class="card-text flex-grow-1">
-                        {{ post.conteudo[:150] }}...
-                    </p>
-                    <div class="mt-auto">
-                        <small class="text-muted">Publicado em: {{ post.data_publicacao.strftime('%d/%m/%Y') }}</small>
-                        <a href="{{ url_for('post_detalhes', id=post.id) }}" class="btn btn-outline-primary btn-sm mt-2">Ler Mais</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% else %}
-        <div class="col-12">
-            <div class="text-center">
-                <h4>Nenhum post encontrado</h4>
-                <p>Em breve teremos novidades no blog!</p>
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/blog/post.html': '''
-{% extends "base.html" %}
-{% block content %}
-<div class="container mt-4">
-    <article class="blog-post">
-        {% if post.imagem %}
-        <img src="{{ url_for('upload_blog', filename=post.imagem) }}" class="img-fluid rounded mb-4" alt="{{ post.titulo }}">
-        {% endif %}
-        
-        <h1>{{ post.titulo }}</h1>
-        <p class="text-muted">
-            <small>Publicado em: {{ post.data_publicacao.strftime('%d/%m/%Y às %H:%M') }}</small>
-        </p>
-        
-        <div class="post-content">
-            {{ post.conteudo|safe }}
-        </div>
-        
-        <div class="mt-4">
-            <a href="/blog" class="btn btn-primary">← Voltar para o Blog</a>
-        </div>
-    </article>
-</div>
-{% endblock %}
-''',
-
-    'templates/sobre.html': '''
-{% extends "base.html" %}
-{% block content %}
-<div class="container mt-4">
-    <div class="row">
-        <div class="col-lg-8 mx-auto">
-            <h1 class="text-center mb-4">Sobre o Correr na Rua</h1>
-            
-            <div class="text-center mb-5">
-                <p class="lead">Conectando corredores às melhores experiências esportivas do Brasil</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>Nossa Missão</h3>
-                <p>O Correr na Rua nasceu da paixão pelo esporte e da necessidade de centralizar informações sobre corridas de rua em um único lugar. Nossa missão é facilitar o encontro entre organizadores de eventos e corredores, promovendo a prática esportiva e um estilo de vida saudável.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>O Que Fazemos</h3>
-                <p>Somos a maior plataforma brasileira de divulgação de corridas de rua. Através do nosso site, corredores de todo o país podem:</p>
-                <ul>
-                    <li>Encontrar corridas próximas à sua localidade</li>
-                    <li>Descobrir eventos por data, distância ou tipo</li>
-                    <li>Realizar inscrições de forma prática e segura</li>
-                    <li>Acompanhar novidades do mundo das corridas através do nosso blog</li>
-                </ul>
-            </div>
-
-            <div class="mb-5">
-                <h3>Nossos Valores</h3>
-                <div class="row">
-                    <div class="col-md-6 mb-3">
-                        <h5>🏃‍♂️ Paixão pelo Esporte</h5>
-                        <p>Acreditamos no poder transformador da corrida de rua na vida das pessoas.</p>
-                    </div>
-                    <div class="col-md-6 mb-3">
-                        <h5>🤝 Transparência</h5>
-                        <p>Valorizamos a honestidade e clareza em todas as nossas relações.</p>
-                    </div>
-                    <div class="col-md-6 mb-3">
-                        <h5>💡 Inovação</h5>
-                        <p>Buscamos constantemente melhorar a experiência dos nossos usuários.</p>
-                    </div>
-                    <div class="col-md-6 mb-3">
-                        <h5>👥 Comunidade</h5>
-                        <p>Fomentamos a união e o apoio entre corredores de todos os níveis.</p>
-                    </div>
-                </div>
-            </div>
-
-            <div class="mb-5">
-                <h3>Nossa História</h3>
-                <p>Fundado em 2024 por um grupo de entusiastas da corrida, o Correr na Rua rapidamente se tornou referência no segmento. Começamos como um pequeno projeto local e hoje conectamos milhares de corredores a eventos em todo o território nacional.</p>
-                <p>Nossa jornada é movida pelas histórias de superação de cada corredor que cruza a linha de chegada e pela satisfação de fazer parte dessa conquista.</p>
-            </div>
-
-            <div class="text-center mt-5">
-                <h4>Junte-se a Nós!</h4>
-                <p>Seja você um corredor iniciante ou experiente, temos uma corrida perfeita para você.</p>
-                <a href="/" class="btn btn-primary btn-lg">Encontrar Minha Próxima Corrida</a>
-            </div>
-        </div>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/termos.html': '''
-{% extends "base.html" %}
-{% block content %}
-<div class="container mt-4">
-    <div class="row">
-        <div class="col-lg-8 mx-auto">
-            <h1 class="text-center mb-4">Termos de Uso</h1>
-            <p class="text-muted text-center">Última atualização: {{ "now"|datetimeformat("%d/%m/%Y") }}</p>
-
-            <div class="mb-5">
-                <h3>1. Aceitação dos Termos</h3>
-                <p>Ao acessar e utilizar o site Correr na Rua (doravante "Plataforma"), você concorda em cumprir e estar vinculado a estes Termos de Uso. Se você não concordar com algum dos termos aqui estabelecidos, recomendamos que não utilize nossa Plataforma.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>2. Descrição do Serviço</h3>
-                <p>O Correr na Rua é uma plataforma online que tem como objetivo:</p>
-                <ul>
-                    <li>Divulgar informações sobre corridas de rua e eventos esportivos</li>
-                    <li>Facilitar a inscrição de participantes em eventos</li>
-                    <li>Fornecer conteúdo informativo através do blog</li>
-                    <li>Conectar organizadores de eventos a potenciais participantes</li>
-                </ul>
-            </div>
-
-            <div class="mb-5">
-                <h3>3. Cadastro e Conta do Usuário</h3>
-                <p>Para realizar inscrições em eventos, o usuário deverá fornecer informações precisas e completas. É de total responsabilidade do usuário:</p>
-                <ul>
-                    <li>Manter a confidencialidade de sua conta</li>
-                    <li>Notificar imediatamente sobre qualquer uso não autorizado</li>
-                    <li>Fornecer informações verídicas e atualizadas</li>
-                </ul>
-            </div>
-
-            <div class="mb-5">
-                <h3>4. Inscrições em Eventos</h3>
-                <p>4.1. As inscrições nos eventos são realizadas diretamente através da Plataforma, porém a organização e execução do evento são de total responsabilidade do organizador.</p>
-                <p>4.2. O Correr na Rua atua como intermediário na divulgação e processo de inscrição, não se responsabilizando por:</p>
-                <ul>
-                    <li>Cancelamento ou alteração de eventos</li>
-                    <li>Problemas durante a realização do evento</li>
-                    <li>Reembolsos ou devoluções de valores</li>
-                    <li>Qualquer questão relacionada à logística do evento</li>
-                </ul>
-                <p>4.3. As políticas de cancelamento e reembolso são definidas exclusivamente pelo organizador de cada evento.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>5. Propriedade Intelectual</h3>
-                <p>Todo o conteúdo disponível na Plataforma, incluindo textos, gráficos, logos, imagens, e software, é propriedade do Correr na Rua ou de seus licenciadores e está protegido por leis de direitos autorais.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>6. Limitação de Responsabilidade</h3>
-                <p>6.1. O Correr na Rua não se responsabiliza por quaisquer danos diretos, indiretos, acidentais ou consequenciais resultantes do uso ou incapacidade de uso da Plataforma.</p>
-                <p>6.2. Não nos responsabilizamos por informações incorretas fornecidas pelos organizadores dos eventos.</p>
-                <p>6.3. A participação em eventos esportivos envolve riscos inerentes à atividade física. Recomendamos que todos os participantes realizem avaliação médica antes de se inscreverem em qualquer evento.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>7. Modificações nos Termos</h3>
-                <p>Reservamo-nos o direito de modificar estes Termos de Uso a qualquer momento. As alterações entrarão em vigor imediatamente após sua publicação na Plataforma. O uso continuado da Plataforma após tais modificações constitui aceitação dos novos termos.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>8. Lei Aplicável</h3>
-                <p>Estes Termos serão regidos e interpretados de acordo com as leis da República Federativa do Brasil.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>9. Contato</h3>
-                <p>Em caso de dúvidas sobre estes Termos de Uso, entre em contato conosco através do painel administrativo.</p>
-            </div>
-        </div>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/privacidade.html': '''
-{% extends "base.html" %}
-{% block content %}
-<div class="container mt-4">
-    <div class="row">
-        <div class="col-lg-8 mx-auto">
-            <h1 class="text-center mb-4">Política de Privacidade</h1>
-            <p class="text-muted text-center">Última atualização: {{ "now"|datetimeformat("%d/%m/%Y") }}</p>
-
-            <div class="mb-5">
-                <h3>1. Introdução</h3>
-                <p>O Correr na Rua valoriza e respeita a privacidade de seus usuários. Esta Política de Privacidade descreve como coletamos, usamos, armazenamos e protegemos suas informações pessoais quando você utiliza nossa Plataforma.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>2. Informações Coletadas</h3>
-                <p>Coletamos os seguintes tipos de informações:</p>
-                
-                <h5>2.1. Informações Pessoais Fornecidas</h5>
-                <ul>
-                    <li>Nome completo</li>
-                    <li>Endereço de e-mail</li>
-                    <li>Número de telefone</li>
-                    <li>Dados de inscrição em eventos</li>
-                </ul>
-
-                <h5>2.2. Informações Coletadas Automaticamente</h5>
-                <ul>
-                    <li>Endereço de IP</li>
-                    <li>Tipo de navegador e dispositivo</li>
-                    <li>Páginas visitadas e tempo de permanência</li>
-                    <li>Data e hora de acesso</li>
-                </ul>
-            </div>
-
-            <div class="mb-5">
-                <h3>3. Uso das Informações</h3>
-                <p>Utilizamos suas informações para:</p>
-                <ul>
-                    <li>Processar inscrições em eventos</li>
-                    <li>Enviar confirmações e atualizações</li>
-                    <li>Melhorar nossa Plataforma e serviços</li>
-                    <li>Enviar comunicados relevantes (quando autorizado)</li>
-                    <li>Garantir a segurança da Plataforma</li>
-                    <li>Cumprir obrigações legais</li>
-                </ul>
-            </div>
-
-            <div class="mb-5">
-                <h3>4. Compartilhamento de Informações</h3>
-                <p>4.1. <strong>Organizadores de Eventos:</strong> Suas informações de inscrição são compartilhadas com os organizadores dos eventos nos quais você se inscreve.</p>
-                <p>4.2. <strong>Prestadores de Serviço:</strong> Podemos compartilhar informações com empresas que nos auxiliam na operação da Plataforma, sempre mediante contratos de confidencialidade.</p>
-                <p>4.3. <strong>Obrigações Legais:</strong> Podemos divulgar informações quando exigido por lei ou para proteger nossos direitos.</p>
-                <p>4.4. <strong>Não vendemos</strong> suas informações pessoais para terceiros.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>5. Cookies e Tecnologias Similares</h3>
-                <p>Utilizamos cookies para:</p>
-                <ul>
-                    <li>Lembrar suas preferências</li>
-                    <li>Analisar o uso da Plataforma</li>
-                    <li>Personalizar sua experiência</li>
-                    <li>Garantir a segurança da sua conta</li>
-                </ul>
-                <p>Você pode controlar o uso de cookies através das configurações do seu navegador.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>6. Armazenamento e Segurança</h3>
-                <p>6.1. Armazenamos suas informações pelo tempo necessário para cumprir as finalidades descritas nesta política, salvo quando a lei exigir um período maior.</p>
-                <p>6.2. Implementamos medidas de segurança técnicas e administrativas para proteger suas informações contra acesso não autorizado, alteração ou destruição.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>7. Seus Direitos</h3>
-                <p>Você tem o direito de:</p>
-                <ul>
-                    <li>Acessar suas informações pessoais</li>
-                    <li>Corrigir informações inexatas</li>
-                    <li>Solicitar a exclusão de seus dados</li>
-                    <li>Revocar consentimentos</li>
-                    <li>Solicitar a portabilidade de dados</li>
-                </ul>
-                <p>Para exercer esses direitos, entre em contato conosco através do painel administrativo.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>8. Menores de Idade</h3>
-                <p>Nossa Plataforma não é direcionada a menores de 18 anos. Não coletamos intencionalmente informações de menores. Se tomarmos conhecimento de que coletamos informações de menor de idade, excluiremos tais informações imediatamente.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>9. Alterações nesta Política</h3>
-                <p>Podemos atualizar esta Política de Privacidade periodicamente. Notificaremos sobre alterações significativas através de aviso em nossa Plataforma ou por e-mail.</p>
-            </div>
-
-            <div class="mb-5">
-                <h3>10. Contato</h3>
-                <p>Se você tiver dúvidas sobre esta Política de Privacidade ou sobre o tratamento de seus dados pessoais, entre em contato conosco através do painel administrativo.</p>
-            </div>
-        </div>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/base.html': '''
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin - Correr na Rua</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="{{ url_for('static', filename='css/style.css') }}" rel="stylesheet">
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/admin">🏃 Admin - Correr na Rua</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item"><a class="nav-link" href="/">Site Principal</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/admin">Dashboard</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/admin/corridas">Corridas</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/admin/blog">Blog</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/admin/estatisticas">Estatísticas</a></li>
-                </ul>
-            </div>
-        </div>
-    </nav>
-
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            <div class="container mt-3">
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ 'danger' if category == 'error' else 'info' }} alert-dismissible fade show">
-                        {{ message }}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                    </div>
-                {% endfor %}
-            </div>
-        {% endif %}
-    {% endwith %}
-
-    <div class="container mt-4">
-        {% block admin_content %}{% endblock %}
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-</body>
-</html>
-''',
-
-    'templates/admin/index.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="row">
-    <div class="col-12">
-        <h1>Dashboard Administrativo</h1>
-        <p class="lead">Bem-vindo ao painel de controle do Correr na Rua</p>
-    </div>
-</div>
-
-<div class="row mt-4 admin-stats">
-    <div class="col-md-3 mb-4">
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Total de Acessos</h5>
-                <h2 class="text-primary">{{ total_acessos }}</h2>
-                <p class="card-text">Acessos totais ao site</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3 mb-4">
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Acessos Hoje</h5>
-                <h2 class="text-success">{{ acessos_hoje }}</h2>
-                <p class="card-text">Acessos no dia de hoje</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3 mb-4">
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Corridas Ativas</h5>
-                <h2 class="text-info">{{ total_corridas }}</h2>
-                <p class="card-text">Corridas cadastradas</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3 mb-4">
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Posts no Blog</h5>
-                <h2 class="text-warning">{{ total_posts }}</h2>
-                <p class="card-text">Artigos publicados</p>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="row mt-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="card-title mb-0">Ações Rápidas</h5>
-            </div>
-            <div class="card-body">
-                <div class="d-grid gap-2">
-                    <a href="/admin/corrida/nova" class="btn btn-primary">Nova Corrida</a>
-                    <a href="/admin/corrida/importar" class="btn btn-outline-primary">Importar Corridas (CSV)</a>
-                    <a href="/admin/blog/novo" class="btn btn-success">Novo Post no Blog</a>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="card-title mb-0">Links Úteis</h5>
-            </div>
-            <div class="card-body">
-                <div class="list-group">
-                    <a href="/admin/corridas" class="list-group-item list-group-item-action">Gerenciar Corridas</a>
-                    <a href="/admin/blog" class="list-group-item list-group-item-action">Gerenciar Blog</a>
-                    <a href="/admin/estatisticas" class="list-group-item list-group-item-action">Ver Estatísticas Detalhadas</a>
-                    <a href="/" class="list-group-item list-group-item-action">Visualizar Site</a>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/corridas.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h1>Gerenciar Corridas</h1>
-    <div>
-        <a href="/admin/corrida/nova" class="btn btn-primary me-2">Nova Corrida</a>
-        <a href="/admin/corrida/importar" class="btn btn-outline-primary">Importar CSV</a>
-    </div>
-</div>
-
-<div class="card">
-    <div class="card-body">
-        {% if corridas %}
-        <div class="table-responsive">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>Imagem</th>
-                        <th>Nome</th>
-                        <th>Data</th>
-                        <th>Local</th>
-                        <th>Distância</th>
-                        <th>Valor</th>
-                        <th>Ações</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for corrida in corridas %}
-                    <tr>
-                        <td>
-                            {% if corrida.imagem %}
-                            <img src="{{ url_for('upload_corridas', filename=corrida.imagem) }}" width="50" height="50" style="object-fit: cover;" alt="{{ corrida.nome }}">
-                            {% else %}
-                            <span class="text-muted">Sem imagem</span>
-                            {% endif %}
-                        </td>
-                        <td>{{ corrida.nome }}</td>
-                        <td>{{ corrida.data.strftime('%d/%m/%Y %H:%M') }}</td>
-                        <td>{{ corrida.local }}</td>
-                        <td>{{ corrida.distancia }} km</td>
-                        <td>R$ {{ "%.2f"|format(corrida.valor) }}</td>
-                        <td>
-                            <div class="btn-group btn-group-sm">
-                                <a href="{{ url_for('corrida_detalhes', id=corrida.id) }}" class="btn btn-outline-primary" target="_blank">Ver</a>
-                                <a href="{{ url_for('editar_corrida', id=corrida.id) }}" class="btn btn-outline-secondary">Editar</a>
-                                <a href="{{ url_for('excluir_corrida', id=corrida.id) }}" class="btn btn-outline-danger" onclick="return confirm('Tem certeza que deseja excluir esta corrida?')">Excluir</a>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="text-center py-4">
-            <h4>Nenhuma corrida cadastrada</h4>
-            <p>Comece adicionando sua primeira corrida!</p>
-            <a href="/admin/corrida/nova" class="btn btn-primary">Adicionar Primeira Corrida</a>
-        </div>
-        {% endif %}
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/nova_corrida.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="row">
-    <div class="col-md-8 mx-auto">
-        <h1>Nova Corrida</h1>
-        
-        <form method="POST" enctype="multipart/form-data" class="mt-4">
-            <div class="mb-3">
-                <label for="nome" class="form-label">Nome da Corrida *</label>
-                <input type="text" class="form-control" id="nome" name="nome" required>
-            </div>
-            
-            <div class="mb-3">
-                <label for="data" class="form-label">Data e Hora *</label>
-                <input type="datetime-local" class="form-control" id="data" name="data" required>
-            </div>
-            
-            <div class="mb-3">
-                <label for="local" class="form-label">Local *</label>
-                <input type="text" class="form-control" id="local" name="local" required>
-            </div>
-            
-            <div class="row">
-                <div class="col-md-6">
-                    <div class="mb-3">
-                        <label for="distancia" class="form-label">Distância (km) *</label>
-                        <input type="number" step="0.1" class="form-control" id="distancia" name="distancia" required>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="mb-3">
-                        <label for="valor" class="form-label">Valor (R$) *</label>
-                        <input type="number" step="0.01" class="form-control" id="valor" name="valor" required>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="mb-3">
-                <label for="imagem" class="form-label">Imagem da Corrida</label>
-                <input type="file" class="form-control" id="imagem" name="imagem" accept="image/*">
-                <div class="form-text">Formatos aceitos: JPG, PNG, GIF. Tamanho máximo: 5MB</div>
-            </div>
-            
-            <div class="mb-3">
-                <label for="descricao" class="form-label">Descrição</label>
-                <textarea class="form-control" id="descricao" name="descricao" rows="5" placeholder="Descreva a corrida, percurso, regras, etc..."></textarea>
-            </div>
-            
-            <div class="d-grid gap-2">
-                <button type="submit" class="btn btn-primary">Salvar Corrida</button>
-                <a href="/admin/corridas" class="btn btn-outline-secondary">Cancelar</a>
-            </div>
-        </form>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/importar_corridas.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="row">
-    <div class="col-md-8 mx-auto">
-        <h1>Importar Corridas via CSV</h1>
-        
-        <div class="card mt-4">
-            <div class="card-body">
-                <h5 class="card-title">Formato do CSV</h5>
-                <p>O arquivo CSV deve conter as seguintes colunas:</p>
-                <ul>
-                    <li><code>nome</code> - Nome da corrida (texto)</li>
-                    <li><code>data</code> - Data e hora (formato: YYYY-MM-DD HH:MM:SS)</li>
-                    <li><code>local</code> - Local da corrida (texto)</li>
-                    <li><code>distancia</code> - Distância em km (número)</li>
-                    <li><code>valor</code> - Valor da inscrição (número)</li>
-                    <li><code>descricao</code> - Descrição (texto, opcional)</li>
-                </ul>
-                
-                <h6>Exemplo:</h6>
-                <pre class="bg-light p-3">
-nome,data,local,distancia,valor,descricao
-"Corrida do Parque","2024-12-25 08:00:00","Parque Ibirapuera - SP",5.0,50.00,"Corrida tradicional no parque"
-"Maratona da Cidade","2024-11-20 07:00:00","Centro - RJ",42.2,120.00,"Maratona completa"</pre>
-            </div>
-        </div>
-        
-        <form method="POST" enctype="multipart/form-data" class="mt-4">
-            <div class="mb-3">
-                <label for="csv" class="form-label">Arquivo CSV *</label>
-                <input type="file" class="form-control" id="csv" name="csv" accept=".csv" required>
-            </div>
-            
-            <div class="d-grid gap-2">
-                <button type="submit" class="btn btn-primary">Importar Corridas</button>
-                <a href="/admin/corridas" class="btn btn-outline-secondary">Cancelar</a>
-            </div>
-        </form>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/editar_corrida.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="row">
-    <div class="col-md-8 mx-auto">
-        <h1>Editar Corrida</h1>
-        
-        <form method="POST" enctype="multipart/form-data" class="mt-4">
-            <div class="mb-3">
-                <label for="nome" class="form-label">Nome da Corrida *</label>
-                <input type="text" class="form-control" id="nome" name="nome" value="{{ corrida.nome }}" required>
-            </div>
-            
-            <div class="mb-3">
-                <label for="data" class="form-label">Data e Hora *</label>
-                <input type="datetime-local" class="form-control" id="data" name="data" 
-                       value="{{ corrida.data.strftime('%Y-%m-%dT%H:%M') }}" required>
-            </div>
-            
-            <div class="mb-3">
-                <label for="local" class="form-label">Local *</label>
-                <input type="text" class="form-control" id="local" name="local" value="{{ corrida.local }}" required>
-            </div>
-            
-            <div class="row">
-                <div class="col-md-6">
-                    <div class="mb-3">
-                        <label for="distancia" class="form-label">Distância (km) *</label>
-                        <input type="number" step="0.1" class="form-control" id="distancia" name="distancia" 
-                               value="{{ corrida.distancia }}" required>
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <div class="mb-3">
-                        <label for="valor" class="form-label">Valor (R$) *</label>
-                        <input type="number" step="0.01" class="form-control" id="valor" name="valor" 
-                               value="{{ corrida.valor }}" required>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="mb-3">
-                <label for="imagem" class="form-label">Imagem da Corrida</label>
-                {% if corrida.imagem %}
-                <div class="mb-2">
-                    <img src="{{ url_for('upload_corridas', filename=corrida.imagem) }}" width="100" class="img-thumbnail">
-                    <br>
-                    <small>Imagem atual</small>
-                </div>
-                {% endif %}
-                <input type="file" class="form-control" id="imagem" name="imagem" accept="image/*">
-                <div class="form-text">Deixe em branco para manter a imagem atual</div>
-            </div>
-            
-            <div class="mb-3">
-                <label for="descricao" class="form-label">Descrição</label>
-                <textarea class="form-control" id="descricao" name="descricao" rows="5">{{ corrida.descricao or '' }}</textarea>
-            </div>
-            
-            <div class="d-grid gap-2">
-                <button type="submit" class="btn btn-primary">Atualizar Corrida</button>
-                <a href="/admin/corridas" class="btn btn-outline-secondary">Cancelar</a>
-            </div>
-        </form>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/blog.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h1>Gerenciar Blog</h1>
-    <a href="/admin/blog/novo" class="btn btn-primary">Novo Post</a>
-</div>
-
-<div class="card">
-    <div class="card-body">
-        {% if posts %}
-        <div class="table-responsive">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>Imagem</th>
-                        <th>Título</th>
-                        <th>Data de Publicação</th>
-                        <th>Ações</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for post in posts %}
-                    <tr>
-                        <td>
-                            {% if post.imagem %}
-                            <img src="{{ url_for('upload_blog', filename=post.imagem) }}" width="50" height="50" style="object-fit: cover;" alt="{{ post.titulo }}">
-                            {% else %}
-                            <span class="text-muted">Sem imagem</span>
-                            {% endif %}
-                        </td>
-                        <td>{{ post.titulo }}</td>
-                        <td>{{ post.data_publicacao.strftime('%d/%m/%Y %H:%M') }}</td>
-                        <td>
-                            <div class="btn-group btn-group-sm">
-                                <a href="{{ url_for('post_detalhes', id=post.id) }}" class="btn btn-outline-primary" target="_blank">Ver</a>
-                                <a href="{{ url_for('editar_post', id=post.id) }}" class="btn btn-outline-secondary">Editar</a>
-                                <a href="{{ url_for('excluir_post', id=post.id) }}" class="btn btn-outline-danger" onclick="return confirm('Tem certeza que deseja excluir este post?')">Excluir</a>
-                            </div>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="text-center py-4">
-            <h4>Nenhum post no blog</h4>
-            <p>Comece criando seu primeiro post!</p>
-            <a href="/admin/blog/novo" class="btn btn-primary">Criar Primeiro Post</a>
-        </div>
-        {% endif %}
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/novo_post.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="row">
-    <div class="col-md-8 mx-auto">
-        <h1>Novo Post no Blog</h1>
-        
-        <form method="POST" enctype="multipart/form-data" class="mt-4">
-            <div class="mb-3">
-                <label for="titulo" class="form-label">Título *</label>
-                <input type="text" class="form-control" id="titulo" name="titulo" required>
-            </div>
-            
-            <div class="mb-3">
-                <label for="conteudo" class="form-label">Conteúdo *</label>
-                <textarea class="form-control" id="conteudo" name="conteudo" rows="10" required placeholder="Digite o conteúdo do post..."></textarea>
-            </div>
-            
-            <div class="mb-3">
-                <label for="imagem" class="form-label">Imagem do Post (opcional)</label>
-                <input type="file" class="form-control" id="imagem" name="imagem" accept="image/*">
-                <div class="form-text">Formatos aceitos: JPG, PNG, GIF. Tamanho máximo: 5MB</div>
-            </div>
-            
-            <div class="d-grid gap-2">
-                <button type="submit" class="btn btn-primary">Publicar Post</button>
-                <a href="/admin/blog" class="btn btn-outline-secondary">Cancelar</a>
-            </div>
-        </form>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/editar_post.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="row">
-    <div class="col-md-8 mx-auto">
-        <h1>Editar Post</h1>
-        
-        <form method="POST" enctype="multipart/form-data" class="mt-4">
-            <div class="mb-3">
-                <label for="titulo" class="form-label">Título *</label>
-                <input type="text" class="form-control" id="titulo" name="titulo" value="{{ post.titulo }}" required>
-            </div>
-            
-            <div class="mb-3">
-                <label for="conteudo" class="form-label">Conteúdo *</label>
-                <textarea class="form-control" id="conteudo" name="conteudo" rows="10" required>{{ post.conteudo }}</textarea>
-            </div>
-            
-            <div class="mb-3">
-                <label for="imagem" class="form-label">Imagem do Post</label>
-                {% if post.imagem %}
-                <div class="mb-2">
-                    <img src="{{ url_for('upload_blog', filename=post.imagem) }}" width="100" class="img-thumbnail">
-                    <br>
-                    <small>Imagem atual</small>
-                </div>
-                {% endif %}
-                <input type="file" class="form-control" id="imagem" name="imagem" accept="image/*">
-                <div class="form-text">Deixe em branco para manter a imagem atual</div>
-            </div>
-            
-            <div class="d-grid gap-2">
-                <button type="submit" class="btn btn-primary">Atualizar Post</button>
-                <a href="/admin/blog" class="btn btn-outline-secondary">Cancelar</a>
-            </div>
-        </form>
-    </div>
-</div>
-{% endblock %}
-''',
-
-    'templates/admin/estatisticas.html': '''
-{% extends "admin/base.html" %}
-{% block admin_content %}
-<div class="row">
-    <div class="col-12">
-        <h1>Estatísticas do Site</h1>
-    </div>
-</div>
-
-<div class="row mt-4">
-    <div class="col-md-4 mb-4">
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Total de Acessos</h5>
-                <h2 class="text-primary">{{ total_acessos }}</h2>
-                <p class="card-text">Desde o início</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 mb-4">
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Acessos Hoje</h5>
-                <h2 class="text-success">{{ acessos_hoje }}</h2>
-                <p class="card-text">No dia de hoje</p>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 mb-4">
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Páginas Mais Visitadas</h5>
-                <h2 class="text-info">{{ top_paginas|length }}</h2>
-                <p class="card-text">Top páginas</p>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="row mt-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="card-title mb-0">Top Páginas Mais Acessadas</h5>
-            </div>
-            <div class="card-body">
-                {% if top_paginas %}
-                <div class="list-group">
-                    {% for pagina, total in top_paginas %}
-                    <div class="list-group-item d-flex justify-content-between align-items-center">
-                        {{ pagina }}
-                        <span class="badge bg-primary rounded-pill">{{ total }}</span>
-                    </div>
-                    {% endfor %}
-                </div>
-                {% else %}
-                <p class="text-muted">Nenhum dado disponível</p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="card-title mb-0">Informações do Sistema</h5>
-            </div>
-            <div class="card-body">
-                <div class="list-group">
-                    <div class="list-group-item d-flex justify-content-between align-items-center">
-                        Corridas Cadastradas
-                        <span class="badge bg-info rounded-pill">{{ total_corridas }}</span>
-                    </div>
-                    <div class="list-group-item d-flex justify-content-between align-items-center">
-                        Posts no Blog
-                        <span class="badge bg-success rounded-pill">{{ total_posts }}</span>
-                    </div>
-                    <div class="list-group-item">
-                        <small class="text-muted">Sistema desenvolvido com Flask + SQLite</small>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-{% endblock %}
-'''
-}
-
-# Criar arquivos
-for filename, content in files.items():
-    with open(filename, 'w', encoding='utf-8') as f:
-        f.write(content)
-
-# Criar arquivos de imagem padrão (placeholder)
-placeholder_images = {
-    'static/images/corridas/default.jpg': b'',
-    'static/images/blog/default.jpg': b''
-}
-
-print("✅ Projeto criado com sucesso!")
-print("\n📋 Estrutura criada:")
-print("├── app.py (aplicação principal)")
-print("├── requirements.txt (dependências)")
-print("├── static/css/style.css (estilos)")
-print("├── templates/ (templates do site)")
-print("│   ├── base.html")
-print("│   ├── index.html")
-print("│   ├── corrida_detalhes.html")
-print("│   ├── sobre.html")
-print("│   ├── termos.html")
-print("│   ├── privacidade.html")
-print("│   ├── blog/")
-print("│   │   ├── index.html")
-print("│   │   └── post.html")
-print("│   └── admin/")
-print("│       ├── base.html")
-print("│       ├── index.html")
-print("│       ├── corridas.html")
-print("│       ├── nova_corrida.html")
-print("│       ├── importar_corridas.html")
-print("│       ├── editar_corrida.html")
-print("│       ├── blog.html")
-print("│       ├── novo_post.html")
-print("│       ├── editar_post.html")
-print("│       └── estatisticas.html")
-print("├── uploads/corridas/ (imagens das corridas)")
-print("├── uploads/blog/ (imagens do blog)")
-print("└── static/images/ (imagens estáticas)")
-print("\n🚀 Para executar:")
-print("1. pip install -r requirements.txt")
-print("2. python app.py")
-print("3. Acesse: http://localhost:5000")
-print("4. Painel admin: http://localhost:5000/admin")
-print("\n📝 CSV de exemplo para importação:")
-print("nome,data,local,distancia,valor,descricao")
-print('"Corrida do Parque","2024-12-25 08:00:00","Parque Ibirapuera - SP",5.0,50.00,"Corrida tradicional"')
-print('"Maratona RJ","2024-11-20 07:00:00","Centro - RJ",42.2,120.00,"Maratona completa"')
-```
-
-Agora está completo! O script gera:
-
-✅ Funcionalidades implementadas:
-
-· 🏃 Site principal com cards de corridas
-· 📝 Sistema completo de blog
-· 🎯 Páginas institucionais (Sobre, Termos, Privacidade)
-· ⚡ Painel administrativo completo
-· 📊 Estatísticas de acesso
-· 📁 Upload de imagens para corridas e blog
-· 📄 Importação de corridas via CSV
-· ✏️ Edição e exclusão de conteúdo
-· 💰 Sistema de inscrição em corridas
-· 🎨 Design responsivo com Bootstrap
-
-✅ Otimizado para 256MB RAM:
-
-· Flask + SQLite (leve)
-· Sem dependências pesadas
-· Código eficiente
-
-✅ Pronto para produção:
-
-· Tratamento de erros
-· Validações
-· Segurança básica
-· Templates completos
-
-Execute o script e depois python app.py para iniciar! 🚀
